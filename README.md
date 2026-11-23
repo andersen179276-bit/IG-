@@ -8,14 +8,14 @@
 - **格子區偵測**：真的會做。在瀏覽器本地用 canvas 分析像素，找出貼文在哪裡、有幾篇。
 - **建議封存**：依偵測結果在本地挑選。
 - **截圖分類**（第三輪）：先判斷是手機、電腦、iPad 截圖，手機走「IG App 版型定位」，電腦／iPad 走通用格線偵測。
-- **第 5 步**：照片編輯、照片氛圍、配樂推薦、「暫時拿掉」既有貼文（模擬封存）、zip 打包，全部在瀏覽器本地完成。
-- **試聽**（第三輪）：推薦的歌可以試聽 15 秒。這是唯一會連外的功能，而且要按下試聽才會連（YouTube 播放器，或用歌名＋歌手查 Apple 的公開試聽）。
+- **第 5 步**：照片編輯、整個主頁預覽（截圖上半部＋可拖曳的格子）、暫時拿掉／釘選、配樂推薦、zip 打包，全部在瀏覽器本地完成。配樂只出現在這一步。
+- **試聽**：只播聲音。推薦的歌用 Apple Music 的 30 秒試聽片段播放（頁面內沒有任何影片框）；沒有 Apple 試聽的歌只給「到 YouTube 聽 ↗」外部連結（新分頁）。
 
-第一輪版本備份在 `_archive/v1/`，第二輪在 `_archive/v2/`。
+第一輪版本備份在 `_archive/v1/`，第二輪在 `_archive/v2/`，第三輪在 `_archive/v3/`。
 
 ## 怎麼打開
 
-**方法一：直接雙擊** `index.html`。所有 JS 都是一般的 `<script>`，`file://` 也能用（試聽的 YouTube 播放器在 `file://` 下可能被拒，會自動改用 Apple 試聽）。
+**方法一：直接雙擊** `index.html`。所有 JS 都是一般的 `<script>`，`file://` 也能用（Apple 試聽的查詢與音檔在 `file://` 下一般也能用；若被瀏覽器擋，會改顯示「到 YouTube 聽／搜尋 ↗」外部連結）。
 
 **方法二：本機 server**（行為最接近正式環境）
 
@@ -25,7 +25,7 @@ python3 -m http.server 8765 --bind 127.0.0.1
 # 開 http://localhost:8765/
 ```
 
-注意：YouTube 嵌入播放器會拒絕「IP 位址」當來源（`http://127.0.0.1` 會得到錯誤 150），請用 `localhost` 或正式網域開；拒絕時程式會自動改用 Apple 試聽。
+頁面不嵌入 YouTube。試聽走 Apple 的公開音檔；本機用 `localhost` 或正式網域開即可。
 
 字體來自 Google Fonts CDN（免費）。離線時會改用系統字體。
 
@@ -38,19 +38,23 @@ python3 -m http.server 8765 --bind 127.0.0.1
 | `#/style` | 02 選類型（6 種） |
 | `#/analysis` | 03 分析：分類與切換、偵測框、編號貼文、空格、建議封存；不確定時問「這是手機還是電腦截圖？」；可以手動拖框 |
 | `#/next` | 04 下一篇拍什麼 |
-| `#/photos` | 05 整理新照片：逐張讀取（「正在讀取第 n／N 張…」）、九宮格預覽＋既有貼文「拿掉」與「已拿掉」區、配這組照片的歌＋試聽、zip 下載、逐張下載 |
-| `#/music` | 配樂偏好。沒有偏好時是建立流程，有偏好時是設定頁。從 header 的音符圖示進入 |
+| `#/photos` | 05 整理新照片：整個主頁預覽、拖曳換位、拿掉／釘選、配樂（語言切換、試聽、偏好）、zip 下載 |
+| `#/music` | 回到第五步的配樂區 |
 
 ## 檔案結構
 
 ```
-index.html              外殼：header（含配樂入口）、script 載入順序
+index.html              外殼與 script 載入順序（配樂入口只在第五步）
 css/style.css           全部樣式；審美 tokens 在 :root
 vendor/jszip.min.js     JSZip 3.10.2（本地檔）＋ vendor/jszip-LICENSE.md
+vendor/opencc-t2cn.js   opencc-js 瀏覽器版（MIT），歌手搜尋的繁簡轉換。授權見同目錄 opencc-js-LICENSE.txt、opencc-js-Apache-2.0.txt、opencc-js-THIRD_PARTY_LICENSES.md
 js/mock-data.js         6 種類型的規則、示範分析、拍攝卡
-js/music-library.js     內建歌單 85 首（曲風、氛圍標籤、建議起始段落、youtubeId、startSec）
+js/music-library.js     內建歌單（曲風、語言、氛圍、youtubeId、itunesPreview；youtubeId 只用於外部連結）
+js/artist-aliases.js    歌單歌手的英文名與暱稱
+js/fuzzy.js             歌手／歌名模糊比對（子字串、繁簡、錯字、別名）
+js/step5.js             第五步排序與拖曳
 js/music.js             配樂偏好（localStorage）、照片氛圍計算、推薦計分
-js/preview.js           試聽：YouTube IFrame（按了才載入）＋ iTunes 備援，15 秒自動停
+js/preview.js           試聽：只播 Apple 30 秒試聽（<audio>）；沒有就給 YouTube 外部連結，不嵌入影片
 js/ai.js                AI 接口（目前回傳示範結果）← 之後在這裡接 AI
 js/grid.js              色塊九宮格、示範主頁產生器、從截圖裁出既有貼文
 js/grid-detect.js       ★ 截圖格子區偵測（獨立模組，測試也呼叫它）
@@ -61,7 +65,8 @@ tools/make-fixtures.mjs 產生合成測試截圖與測試照片（全部是色�
 tools/test-grid-detect.mjs  格線偵測自動測試（PASS/FAIL）
 tools/screenshot.mjs    走完整個流程、截全部畫面、做功能檢查（含 zip 的 unzip -t）
 tools/fixtures/         測試圖；synth-expect.json 是合成截圖的真實格線座標（含分頁列下緣、導覽列上緣）
-tools/music-lookup/     執行方查 YouTube ID 的腳本與結果；verified.json 是唯一的 youtubeId 來源
+tools/music-lookup/     執行方查 YouTube ID 的腳本與結果；verified.json 是唯一的 youtubeId／itunesPreview 來源；
+                        check-ids.mjs 比對 music-library.js 與 verified.json（node tools/music-lookup/check-ids.mjs .）
 screenshots/            截圖
 REVIEW.md               自我審查紀錄
 ```
@@ -143,16 +148,17 @@ node tools/test-grid-detect.mjs     # 10 張全部 PASS（也檢查分類、iPho
   - 「換一組」會換雜訊種子，並避開剛推過的歌。
 - **歌單**（`js/music-library.js`）共 85 首，依知識整理。起始段落是「前奏、主歌、副歌、橋段」，另有 `startSec`（人工估計的秒數）。
 
-### 試聽（`js/preview.js`，第三輪）
+### 試聽（`js/preview.js`，第四輪：只播聲音）
 
-- **YouTube 為主**：只用 `tools/music-lookup/verified.json` 的 `youtubeId`（由執行方查詢驗證，原樣寫入，不可自行修改或補上；〈董小姐〉為 null）。Live／節目版標 `ytNote`。
-  - 第一次按試聽才動態載入 `https://www.youtube.com/iframe_api`。
-  - `playerVars: { start: startSec, end: startSec + 15, playsinline: 1, controls: 1, rel: 0, origin }`，另有計時器在 15 秒時停止。
-  - 播放器 320×180 細框，展開在該首歌卡片內；有細線進度、剩餘秒數、暫停／停止、「試聽 15 秒」與來源小字，並註明「起始秒數為人工判斷，可能不精準」。
-- **備援 iTunes**：youtubeId 為 null、iframe_api 載入失敗或 8 秒逾時、YouTube `onError`（2／5／100／101／150）→ `https://itunes.apple.com/search?term=<歌手 歌名>&entity=song&country=tw&limit=5`，歌名＋歌手正規化比對後取 `previewUrl`，用 `<audio>` 從 0 播 15 秒（標「Apple Music 30 秒試聽片段」）。都沒有 → 「請到 IG 搜尋這首歌」。查詢結果存在記憶體。
-- **同時只播一首**；切換別首、換頁、換一組、不喜歡、頁面隱藏（`visibilitychange`／`pagehide`）時立刻停止。
-- **設定頁「喜歡的歌」**：每首旁有試聽鍵，只查 iTunes（不做 YouTube 搜尋、不用 AI）。
-- 播放鍵是 44×44 細線圓形。
+- **只用 Apple／iTunes 30 秒試聽**：`https://itunes.apple.com/search?term=<歌手 歌名>&entity=song&country=tw&limit=10`（回應帶 `access-control-allow-origin: *`，直接 fetch，8 秒逾時），歌名＋歌手正規化比對後取 `previewUrl`，用一個共用的 `<audio>`（`preload="none"`、`playsinline`）從 0 播到結尾（約 30 秒）自動停止並重置。查詢結果存在記憶體。
+- **不顯示任何影片框，不嵌入 YouTube**。每首只有：細線圓形播放／暫停鍵（44×44）＋ 1–2px 可可棕細進度線（底線 `--line`）＋剩餘秒數小字＋「Apple Music 試聽」。載入中按鈕是細線轉圈。
+- **沒有 Apple 試聽 → 外部連結**（`target="_blank" rel="noopener"`，絕不編造 ID）：
+  - `music-library.js` 的 `itunesPreview`（照 `verified.json` 寫入）為 false 的 3 首（〈Fly Me to the Moon〉、〈Plastic Love〉、〈Spring Day〉）一開始就顯示「到 YouTube 聽 ↗」→ `https://www.youtube.com/watch?v=<youtubeId>&t=<startSec>s`。
+  - 執行期查不到／比對不到／音檔載入錯誤：有已驗證 `youtubeId` →「到 YouTube 聽 ↗」；`youtubeId` 為 null（〈董小姐〉）→「到 YouTube 搜尋 ↗」（`results?search_query=歌名 歌手`）。
+  - `startSec` 只用在連結的 `t=`，畫面標「從建議段落開始（人工估計）」。
+- **iPhone Safari**：不自動播放；`audio.play()` 只在點擊播放鍵的處理中呼叫。推薦區出現時先查好 previewUrl（只查不播），點擊時同步 `play()`；若還沒查好，點擊當下先 `load()` 解鎖 `<audio>`，查到再播；被拒（`NotAllowedError`）就顯示「再按一次播放」。
+- **同時只播一首**；按另一首、換一組、不喜歡、換頁、推薦區被重畫或移除、`visibilitychange` 隱藏、`pagehide` 時立刻 `pause()` 並重置。
+- **設定頁「喜歡的歌」**：只用 Apple 試聽；沒有就顯示「沒有找到試聽」＋「到 YouTube 搜尋 ↗」，不播 YouTube、不用 AI。
 
 ## 第 5 步「暫時拿掉」（模擬封存，不會真的刪除）
 
@@ -203,5 +209,5 @@ ONLY=iphone,perf,archive,music node tools/screenshot.mjs   # 只跑第三輪新�
 - 封存標記、配樂偏好有沒有存進 localStorage、喜歡和不喜歡、zip
 - iPhone 截圖：分類、框在分頁列下、全寬、手動框初始位置、切換手機／電腦、不確定時的提問
 - 暫時拿掉：索引、toast 復原、恢復回原位、重新整理後保留、全部還原
-- 試聽：iTunes previewUrl 能否播放、YouTube 是否真的開始播、15 秒自動停、同時只播一首、換一組／換頁停止、兩種備援
+- 試聽：Apple previewUrl 是否真的播放、沒有自動播放、暫停／繼續、播完自動停止重置、同時只播一首、換一組／推薦區移除／換頁停止、iTunes 失敗時的外部連結（watch／search）、無 Apple 試聽歌的連結、設定頁找不到的歌、畫面沒有 iframe／video
 - 效能：1179×2556 與 1290×2796 從選檔到偵測完成的時間

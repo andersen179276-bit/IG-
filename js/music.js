@@ -125,7 +125,12 @@
   function recommend(prefs, mood, opts) {
     opts = opts || {};
     var avoid = opts.avoid || [];
-    var list = LIB.SONGS.filter(function (s) { return prefs.dislikes.indexOf(s.id) < 0; })
+    var lang = opts.lang === 'zh' || opts.lang === 'en' ? opts.lang : '';
+    var list = LIB.SONGS.filter(function (s) {
+      if (prefs.dislikes.indexOf(s.id) >= 0) return false;
+      if (lang && s.lang !== lang) return false;
+      return true;
+    })
       .map(function (s) { var r = score(s, prefs, mood, opts.seed || 0); return { s: s, sc: r.sc - (avoid.indexOf(s.id) >= 0 ? 6 : 0), why: r.why }; })
       .sort(function (a, b) { return b.sc - a.sc; });
     var out = [], artists = {};

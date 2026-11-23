@@ -1,12 +1,13 @@
 /*
  * app.js — 路由與畫面
  * ------------------------------------------------------------
- * hash 路由：#/ → #/upload → #/style → #/analysis → #/next → #/photos，另有 #/music（配樂偏好）
+ * hash 路由：#/ → #/upload → #/style → #/analysis → #/next → #/photos。#/music 會回到第五步的配樂區。
  * 照片與截圖都不離開裝置。會留在這台裝置上的資料：
  *   localStorage['liuge.music.v1']     配樂偏好（見 js/music.js）
  *   localStorage['liuge.archived.v1']  第 5 步「暫時拿掉」的貼文索引（原始位置＋來源截圖識別）
  *   sessionStorage['liuge.shot.v1']    分析用的縮小截圖（寬 ≤ 1080 的 JPEG），重新整理後還原預覽；關掉分頁就清除
- * 唯一的對外連線：第 5 步按「試聽」時才載入 YouTube 播放器，或用歌名＋歌手查 Apple 的公開試聽（js/preview.js）。
+ * 唯一的對外連線：配樂推薦出現時用歌名＋歌手查 Apple 的公開 30 秒試聽（只查不播），按播放鍵才載入音檔（js/preview.js）。
+ *   沒有 Apple 試聽的歌只顯示「到 YouTube 聽／搜尋 ↗」外部連結（新分頁），頁面內不嵌入任何影片。
  */
 (function () {
   'use strict';
@@ -30,7 +31,9 @@
     shots: null, shotsKey: null, shotIndex: 0,
     photos: [], cur: null,
     existing: null, existingKey: null, existingHints: [],
-    music: { seed: 0, avoid: [], recs: null, returnTo: null, tab: 'genre', draft: null, taste: null }
+    order: null,
+    chrome: null,
+    music: { seed: 0, avoid: [], recs: null, returnTo: null, tab: 'genre', draft: null, taste: null, lang: 'all', focus: false }
   };
 
   var $main = document.getElementById('main');
@@ -922,6 +925,13 @@
     prepareExisting();
     drawPhotos();
     onWin('resize', function () { if (ph.stageCv) sizeStage(); });
+    if (state.music.focus) {
+      setTimeout(function () {
+        var b = document.getElementById('musicBox');
+        if (b) b.scrollIntoView({ block: 'start' });
+        state.music.focus = false;
+      }, 80);
+    }
   }
 
   /* 多張照片：逐張讀（每張之間讓畫面喘口氣），顯示「正在讀取第 n／N 張…」 */
@@ -976,7 +986,7 @@
       state.shotP.then(function () { if (currentRoute() === 'photos') { prepareExisting(); drawGridPreview(); } }, function () {});
       return;
     }
-    if (!sh || !sh.grid || !sh.grid.posts) { state.existing = null; state.existingHints = []; return; }
+    if (!sh || !sh.grid || !sh.grid.posts) { state.existing = null; state.existingHints = []; state.chrome = null; return; }
     var g = sh.grid, key = sh.url + '|' + g.mode + '|' + g.kind + '|' + (g.box ? [g.box.x, g.box.y, g.box.w].map(Math.round).join(',') : '');
     if (state.existing && state.existingKey === key) return;
     // 分析頁標「建議封存」的格子 → 第 5 步加小標「建議拿掉」
@@ -986,6 +996,7 @@
     var img = new Image();
     img.onload = function () {
       state.existing = Grid.cropExistingCells(img, g, 12);
+      state.chrome = Grid.cropProfileChrome(img, g);
       state.existingHints = cells.map(function (c) { return !!archSet[c.i]; });
       state.existingKey = key;
       if (currentRoute() === 'photos') drawGridPreview();
@@ -1023,11 +1034,25 @@
     var r = archRemoved();
     if (r.indexOf(k) >= 0) return;
     r.push(k); archSave(r);
+    pinSave(pinList().filter(function (x) { return x !== k; }));
+    if (state.order) state.order = state.order.filter(function (it) { return !(it.t === 'o' && it.k === k); });
     drawGridPreview();
     toast('已拿掉原第 ' + (k + 1) + ' 格', { label: '復原', fn: function () { restoreOld(k, true); } });
   }
   function restoreOld(k, quiet) {
     archSave(archRemoved().filter(function (x) { return x !== k; }));
+    var pins = pinList();
+    var order = (state.order || []).filter(function (it) { return !(it.t === 'o' && it.k === k); });
+    var pinItems = [], rest = [];
+    order.forEach(function (it) {
+      if (it.t === 'o' && pins.indexOf(it.k) >= 0) pinItems.push(it); else rest.push(it);
+    });
+    var at = rest.length;
+    for (var i = 0; i < rest.length; i++) {
+      if (rest[i].t === 'o' && rest[i].k > k) { at = i; break; }
+    }
+    rest.splice(at, 0, { t: 'o', k: k });
+    state.order = pinItems.concat(rest);
     drawGridPreview();
     if (!quiet) toast('原第 ' + (k + 1) + ' 格回到原位');
   }
@@ -1098,8 +1123,6 @@
           '<div class="ed-head">' +
             '<span class="ed-name">' + pad2(idx + 1) + ' · ' + esc(p.name) + '</span>' +
             '<span class="ed-ord">' +
-              '<button class="icon-btn" type="button" id="mvL" aria-label="往前移"' + (idx === 0 ? ' disabled' : '') + '>' + I.left + '</button>' +
-              '<button class="icon-btn" type="button" id="mvR" aria-label="往後移"' + (idx === state.photos.length - 1 ? ' disabled' : '') + '>' + I.right + '</button>' +
               '<button class="icon-btn" type="button" id="rmPh" aria-label="移除這張">' + I.close + '</button>' +
             '</span>' +
           '</div>' +
@@ -1194,8 +1217,6 @@
     });
     document.getElementById('addMore').addEventListener('click', function () { if (!ph.loading) document.getElementById('phInput').click(); });
     bindDrop(document.getElementById('strip'), addFiles);
-    document.getElementById('mvL').addEventListener('click', function () { move(p, -1); });
-    document.getElementById('mvR').addEventListener('click', function () { move(p, 1); });
     document.getElementById('rmPh').addEventListener('click', function () {
       var i = state.photos.indexOf(p);
       state.photos.splice(i, 1);
@@ -1254,55 +1275,209 @@
     drawPhotos();
   }
 
+  var PIN_KEY = 'liuge.pinned.v1';
+  var HINT_KEY = 'liuge.draghint.v1';
+  var LANG_KEY = 'liuge.music.lang';
+
+  function pinList() {
+    try {
+      var o = JSON.parse(localStorage.getItem(PIN_KEY) || 'null');
+      if (!o || o.v !== 1 || o.src !== archSource() || !Array.isArray(o.pins)) return [];
+      return o.pins.filter(function (k) { return typeof k === 'number'; }).slice(0, 3);
+    } catch (e) { return []; }
+  }
+  function pinSave(pins) {
+    try { localStorage.setItem(PIN_KEY, JSON.stringify({ v: 1, src: archSource(), pins: pins.slice(0, 3), updatedAt: new Date().toISOString() })); } catch (e) {}
+  }
+  function keptOldKs() {
+    var removed = archRemoved();
+    return existingItems().map(function (it) { return it.k; }).filter(function (k) { return removed.indexOf(k) < 0; });
+  }
+  function photoIds() { return state.photos.map(function (p) { return p.id; }); }
+  function ensureOrder() {
+    state.order = window.Step5.syncOrder(state.order, photoIds(), keptOldKs(), pinList());
+    return state.order;
+  }
+  function syncPhotoOrder() {
+    var ids = ensureOrder().filter(function (it) { return it.t === 'n'; }).map(function (it) { return it.id; });
+    var map = {};
+    state.photos.forEach(function (p) { map[p.id] = p; });
+    var next = ids.map(function (id) { return map[id]; }).filter(Boolean);
+    state.photos.forEach(function (p) { if (ids.indexOf(p.id) < 0) next.push(p); });
+    state.photos = next;
+  }
+  function musicLang() {
+    try {
+      var v = localStorage.getItem(LANG_KEY);
+      if (v === 'zh' || v === 'en' || v === 'all') return v;
+    } catch (e) {}
+    return state.music.lang || 'all';
+  }
+  function setMusicLang(v) {
+    state.music.lang = v;
+    try { localStorage.setItem(LANG_KEY, v); } catch (e) {}
+    state.music.recs = null;
+  }
+  function hintHidden() {
+    try { return localStorage.getItem(HINT_KEY) === '1'; } catch (e) { return false; }
+  }
+
   function gridPreviewShell() {
     var hasOld = state.shot && state.shot.grid && state.shot.grid.posts;
-    var note = hasOld ? '後面接的是從你的主頁截圖裁出的既有貼文（只取偵測到的 ' + state.shot.grid.posts + ' 篇）。' : '後面以抽象色塊代表既有貼文。';
+    var note = hasOld ? '上半部是你的主頁截圖，下面的格子可以拖。既有貼文裁自偵測到的 ' + state.shot.grid.posts + ' 篇。' : '沒有截圖時用示範版頭，下面的色塊代表既有貼文。';
     var n = state.photos.length;
-    return '<span class="section-label">九宮格預覽</span>' +
+    var hint = hintHidden() ? '' :
+      '<div class="drag-hint" id="dragHint"><span>按住照片拖曳可以換位置</span><button type="button" id="dragHintX" aria-label="關閉提示">' + I.close + '</button></div>';
+    return '<span class="section-label">整個主頁</span>' +
       '<h2 class="h2">排在主頁上的樣子</h2>' +
-      '<p class="small mt-8">新照片排在最前面，' + note + '主頁縮圖以 4:5 直式呈現（IG 2025 年起主頁改為直式縮圖）。</p>' +
-      '<div class="ig-mock"><div class="ig-top"><span class="av"></span><span><span class="nm" style="display:block"></span><span class="nm2" style="display:block"></span></span></div>' +
-      '<div class="pgrid" id="pgrid"></div></div>' +
-      '<div class="gp-legend"><span><i></i>新照片 · 可拖曳排序</span><span><i class="o"></i>既有貼文 · 按「拿掉」模擬封存</span></div>' +
+      '<p class="small mt-8">' + note + '新照片與舊貼文都可以拖到任何一格。主頁縮圖以 4:5 直式呈現。</p>' +
+      hint +
+      '<div class="phone-frame" id="phoneFrame"><div class="ig-head" id="igHead"></div><div class="pgrid" id="pgrid"></div><div class="ig-nav" id="igNav" hidden></div></div>' +
+      '<div class="gp-legend"><span><i></i>新照片</span><span><i class="o"></i>既有貼文 · 可拿掉、可釘選</span></div>' +
+      '<div id="igTodo" class="ig-todo"></div>' +
       '<div id="archBox" class="archbox"></div>' +
-      (n ? '<div id="musicBox" class="musicbox"></div>' : '') +
+      '<div id="musicBox" class="musicbox"></div>' +
       '<div class="dl">' +
         '<button class="btn btn-block" type="button" id="dlZip"' + (n ? '' : ' disabled') + '>打包成 zip 下載（' + n + ' 張）</button>' +
-        '<p class="small mt-8">Safari 建議用這個：一次存成「' + Editor.zipName() + '」，裡面依目前順序是 01.jpg、02.jpg…（1080×1350 JPEG）。</p>' +
+        '<p class="small mt-8">zip 裡只有新照片，依它們之間的相對順序命名 01.jpg、02.jpg…（1080×1350 JPEG）。舊貼文不會放進去。檔名「' + Editor.zipName() + '」。</p>' +
         '<button class="btn btn-ghost btn-block mt-16" type="button" id="dlAll"' + (n ? '' : ' disabled') + '>逐張下載</button>' +
-        '<p class="small mt-8">一張一張存成 01.jpg、02.jpg…，瀏覽器可能會詢問是否允許下載多個檔案。</p>' +
+        '<p class="small mt-8">同樣只下載新照片，順序與 zip 相同。</p>' +
       '</div>';
+  }
+
+  function headerHTML() {
+    var ch = state.chrome;
+    if (ch && ch.url) {
+      return { head: '<img class="ig-shot" alt="主頁上半部" src="' + ch.url + '">', nav: ch.nav ? '<img alt="" src="' + ch.nav + '">' : '', theme: ch.theme || 'light' };
+    }
+    var name = '你的帳號';
+    var demo = !(state.shot && state.shot.grid && state.shot.grid.posts);
+    return {
+      theme: 'light',
+      nav: '',
+      head:
+        '<div class="ig-fallback' + (demo ? ' is-demo' : '') + '">' +
+          '<div class="fb-top"><span class="av" aria-hidden="true"></span><div><b class="fb-name">' + name + '</b><span class="fb-sub">' + (demo ? '示範帳號' : '從截圖讀不到名稱') + '</span></div></div>' +
+          '<div class="fb-stats"><span><b>' + (demo ? '12' : '—') + '</b>貼文</span><span><b>' + (demo ? '1280' : '—') + '</b>粉絲</span><span><b>' + (demo ? '320' : '—') + '</b>追蹤中</span></div>' +
+          '<p class="fb-bio">' + (demo ? '色塊示範。上傳主頁截圖後，這裡會換成你的版頭。' : '這次沒能切出版頭，先用這個樣子對齊格子。') + '</p>' +
+          '<div class="fb-hl" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>' +
+          '<div class="fb-tabs" aria-hidden="true"><span class="on"></span><span></span><span></span></div>' +
+        '</div>'
+    };
+  }
+
+  function drawIgTodo() {
+    var box = document.getElementById('igTodo');
+    if (!box) return;
+    var lines = window.Step5.tasks(ensureOrder(), pinList(), archRemoved());
+    if (!lines.length) { box.innerHTML = ''; return; }
+    box.innerHTML = '<span class="section-label">你在 IG 要做的事</span><ol class="todo">' +
+      lines.map(function (t) { return '<li>' + esc(t) + '</li>'; }).join('') + '</ol>';
+  }
+
+  function paintChrome() {
+    var frame = document.getElementById('phoneFrame');
+    var head = document.getElementById('igHead');
+    var nav = document.getElementById('igNav');
+    if (!frame || !head) return;
+    var h = headerHTML();
+    frame.setAttribute('data-theme', h.theme || 'light');
+    head.innerHTML = h.head;
+    if (nav) {
+      if (h.nav) { nav.hidden = false; nav.innerHTML = h.nav; }
+      else { nav.hidden = true; nav.innerHTML = ''; }
+    }
   }
 
   function drawGridPreview() {
     var g = document.getElementById('pgrid');
     if (!g) return;
-    var n = state.photos.length;
-    var total = Math.max(9, Math.min(15, Math.ceil((n + 6) / 3) * 3));
-    var html = '';
-    state.photos.forEach(function (p, k) {
-      html += '<div class="pc new' + (p.id === state.cur ? ' cur' : '') + '" data-id="' + p.id + '" tabindex="0" role="button" aria-label="第 ' + (k + 1) + ' 張新照片，拖曳可排序">' +
-        '<canvas data-pid="' + p.id + '" width="216" height="270"></canvas><span class="badge">' + pad2(k + 1) + '</span></div>';
-    });
-    var rest = total - n;
-    // 既有貼文：拿掉的不顯示，其餘依原始順序往前補位（看起來像封存後的主頁）
-    var removed = archRemoved();
-    var kept = existingItems().filter(function (it) { return removed.indexOf(it.k) < 0; });
-    for (var k = 0; k < rest; k++) {
-      var it = kept[k];
-      if (!it) { html += '<div class="pc old none"></div>'; continue; }
-      html += '<div class="pc old" data-k="' + it.k + '">' + oldThumbHTML(it) +
-        (it.hint ? '<span class="pc-hint">建議拿掉</span>' : '') +
+    paintChrome();
+    var order = ensureOrder();
+    var pins = pinList();
+    var byId = {};
+    state.photos.forEach(function (p) { byId[p.id] = p; });
+    var byK = {};
+    existingItems().forEach(function (it) { byK[it.k] = it; });
+    var newOrdinal = {};
+    var ni = 0;
+    order.forEach(function (it) { if (it.t === 'n') { ni++; newOrdinal[it.id] = ni; } });
+    var html = order.map(function (it, i) {
+      if (it.t === 'n') {
+        var p = byId[it.id];
+        if (!p) return '';
+        var no = newOrdinal[p.id];
+        return '<div class="pc new' + (p.id === state.cur ? ' cur' : '') + '" data-i="' + i + '" data-id="' + p.id + '" tabindex="0" role="button" aria-label="第 ' + no + ' 張新照片，拖曳可換位置">' +
+          '<canvas data-pid="' + p.id + '" width="216" height="270"></canvas><span class="badge">' + pad2(no) + '</span></div>';
+      }
+      var old = byK[it.k];
+      if (!old) return '';
+      var pinned = pins.indexOf(it.k) >= 0;
+      var moved = window.Step5.shifted(order, it.k, pins);
+      var pinBtn = moved && i < 3 && !pinned
+        ? '<button class="pc-pin" type="button" data-pin="' + it.k + '">改成釘選</button>' : '';
+      var unpin = pinned ? '<button class="pc-pin" type="button" data-unpin="' + it.k + '">取消釘選</button>' : '';
+      return '<div class="pc old' + (pinned ? ' is-pin' : '') + (moved ? ' is-moved' : '') + '" data-i="' + i + '" data-k="' + it.k + '" tabindex="0" role="button" aria-label="原第 ' + (it.k + 1) + ' 格既有貼文，拖曳可換位置">' +
+        oldThumbHTML(old) +
+        (pinned ? '<span class="pc-pinmark" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 1.5v7.2M5.2 4.2h5.6M6.4 8.6 8 14.2 9.6 8.6"/></svg></span>' : '') +
+        (old.hint && !moved ? '<span class="pc-hint">建議拿掉</span>' : '') +
+        (moved ? '<span class="pc-moved">無法重排</span><p class="pc-moved-full">IG 無法重排已發貼文，可改用釘選</p>' : '') +
+        pinBtn + unpin +
         '<button class="pc-rm" type="button" data-arch="' + it.k + '" aria-label="暫時拿掉原第 ' + (it.k + 1) + ' 格（不會刪除）"><span>拿掉</span></button></div>';
-    }
+    }).join('');
+    while ((order.length % 3) !== 0) { html += '<div class="pc old none"></div>'; order = order.concat([{ t: 'x' }]); }
+    if (!html) html = '<div class="pc old none"></div><div class="pc old none"></div><div class="pc old none"></div>';
     g.innerHTML = html;
+    var cap = document.getElementById('movedCaption');
+    if (!cap) {
+      cap = document.createElement('p');
+      cap.id = 'movedCaption';
+      cap.className = 'moved-caption';
+      g.parentNode.insertBefore(cap, g.nextSibling);
+    }
+    var anyMoved = !!g.querySelector('.is-moved');
+    cap.hidden = !anyMoved;
+    cap.textContent = anyMoved ? 'IG 無法重排已發貼文，可改用釘選' : '';
     qsa('[data-arch]', g).forEach(function (b) {
       b.addEventListener('click', function (e) { e.stopPropagation(); archiveOld(Number(b.getAttribute('data-arch'))); });
     });
+    qsa('[data-pin]', g).forEach(function (b) {
+      b.addEventListener('click', function (e) { e.stopPropagation(); pinOld(Number(b.getAttribute('data-pin'))); });
+    });
+    qsa('[data-unpin]', g).forEach(function (b) {
+      b.addEventListener('click', function (e) { e.stopPropagation(); unpinOld(Number(b.getAttribute('data-unpin'))); });
+    });
+    var hx = document.getElementById('dragHintX');
+    if (hx && !hx._bound) {
+      hx._bound = true;
+      hx.addEventListener('click', function () {
+        try { localStorage.setItem(HINT_KEY, '1'); } catch (e) {}
+        var bar = document.getElementById('dragHint'); if (bar) bar.remove();
+      });
+    }
     drawArchived();
+    drawIgTodo();
     paintThumbs();
     bindGridDrag(g);
     bindDownloads();
+    renderMusicBox();
+  }
+
+  function pinOld(k) {
+    var pins = pinList();
+    if (pins.indexOf(k) >= 0) return;
+    if (pins.length >= 3) { toast('釘選最多 3 篇'); return; }
+    pins.push(k);
+    pinSave(pins);
+    state.order = window.Step5.syncOrder(state.order, photoIds(), keptOldKs(), pins);
+    drawGridPreview();
+    toast('已標成釘選。到 IG 把原第 ' + (k + 1) + ' 篇改成置頂。');
+  }
+  function unpinOld(k) {
+    pinSave(pinList().filter(function (x) { return x !== k; }));
+    state.order = window.Step5.syncOrder(state.order, photoIds(), keptOldKs(), pinList());
+    drawGridPreview();
+    toast('已取消釘選');
   }
 
   function bindDownloads() {
@@ -1330,69 +1505,51 @@
     }
   }
 
-  // 九宮格拖曳排序：pointer events（滑鼠、觸控都可），也可以點選後用 ← → 按鈕
+  function commitMove(from, to) {
+    var order = ensureOrder();
+    var next = window.Step5.arrayMove(order, from, to);
+    var pins = pinList();
+    var kept = [];
+    var broken = false;
+    next.forEach(function (it) {
+      if (!broken && it.t === 'o' && pins.indexOf(it.k) >= 0) kept.push(it.k);
+      else broken = true;
+    });
+    pinSave(kept);
+    state.order = next;
+    syncPhotoOrder();
+    state.music.recs = null;
+    drawPhotos();
+  }
+
+  // 九宮格拖曳：滑鼠按住就拖；觸控長按約 0.2 秒。鍵盤 ← → 仍可移動（畫面上沒有箭頭按鈕）。
   function bindGridDrag(g) {
-    qsa('.pc.new', g).forEach(function (cell) {
+    qsa('.pc:not(.none)', g).forEach(function (cell) {
       cell.addEventListener('keydown', function (e) {
-        var p = state.photos.filter(function (q) { return q.id === cell.getAttribute('data-id'); })[0];
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); state.cur = p.id; drawPhotos(); }
+        var i = Number(cell.getAttribute('data-i'));
+        if (e.key === 'Enter' || e.key === ' ') {
+          var id = cell.getAttribute('data-id');
+          if (!id) return;
+          e.preventDefault(); state.cur = id; drawPhotos();
+        }
         if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-          e.preventDefault(); move(p, e.key === 'ArrowLeft' ? -1 : 1);
-          var again = qs('.pc.new[data-id="' + p.id + '"]'); if (again) again.focus();
+          e.preventDefault();
+          var to = i + (e.key === 'ArrowLeft' ? -1 : 1);
+          if (to < 0 || to >= ensureOrder().length) return;
+          commitMove(i, to);
+          var again = qs('.pc[data-i="' + to + '"]'); if (again) again.focus();
         }
       });
-      cell.addEventListener('pointerdown', function (e) {
-        if (e.button !== 0) return;
-        var id = cell.getAttribute('data-id');
-        ph.drag = { id: id, x: e.clientX, y: e.clientY, started: false, ghost: null, pid: e.pointerId };
-        e.preventDefault();
-      });
     });
-    if (ph._dragBound) return;
-    ph._dragBound = true;
-    window.addEventListener('pointermove', function (e) {
-      var d = ph.drag; if (!d) return;
-      if (!d.started) {
-        if (Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) < 6) return;
-        d.started = true;
-        var src = qs('.pc.new[data-id="' + d.id + '"]');
-        if (!src) { ph.drag = null; return; }
-        var r = src.getBoundingClientRect();
-        d.w = r.width; d.h = r.height; d.ox = e.clientX - r.left; d.oy = e.clientY - r.top;
-        var gh = src.cloneNode(true);
-        gh.classList.add('ghost'); gh.classList.remove('cur');
-        gh.style.width = r.width + 'px'; gh.style.height = r.height + 'px';
-        var c1 = src.querySelector('canvas'), c2 = gh.querySelector('canvas');
-        c2.getContext('2d').drawImage(c1, 0, 0);
-        document.body.appendChild(gh); d.ghost = gh;
-        src.classList.add('dragging');
-      }
-      d.ghost.style.left = (e.clientX - d.ox) + 'px';
-      d.ghost.style.top = (e.clientY - d.oy) + 'px';
-      var under = document.elementFromPoint(e.clientX, e.clientY);
-      var target = under && under.closest ? under.closest('#pgrid .pc.new') : null;
-      if (target && target.getAttribute('data-id') !== d.id) {
-        var from = indexOfId(d.id), to = indexOfId(target.getAttribute('data-id'));
-        var p = state.photos.splice(from, 1)[0];
-        state.photos.splice(to, 0, p);
-        drawGridPreview();
-        var again = qs('.pc.new[data-id="' + d.id + '"]'); if (again) again.classList.add('dragging');
+    window.Step5.bindDrag(g, {
+      onCommit: commitMove,
+      onTap: function (index, el) {
+        var id = el.getAttribute('data-id');
+        if (!id) return;
+        state.cur = id;
+        drawPhotos();
       }
     });
-    window.addEventListener('pointerup', function () {
-      var d = ph.drag; if (!d) return;
-      ph.drag = null;
-      if (d.ghost) { d.ghost.remove(); drawPhotos(); return; }
-      // 沒有拖動 = 點選 → 進入編輯
-      state.cur = d.id; drawPhotos();
-    });
-    window.addEventListener('pointercancel', function () {
-      var d = ph.drag; ph.drag = null; if (d && d.ghost) { d.ghost.remove(); drawPhotos(); }
-    });
-  }
-  function indexOfId(id) {
-    for (var i = 0; i < state.photos.length; i++) if (state.photos[i].id === id) return i;
-    return -1;
   }
 
   /* ---------- 第 5 步：配這組照片的歌 ---------- */
@@ -1408,42 +1565,53 @@
     return '<span class="mood-tag">' + m.label + '</span><span>' + m.sentence + '</span>';
   }
 
-  function playBtnHTML(id, title, attr) {
-    return '<button type="button" class="pv-btn" ' + attr + '="' + esc(id) + '" data-title="' + esc(title) + '" aria-pressed="false" aria-label="試聽 15 秒：' + esc(title) + '">' +
-      '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.5v9l7-4.5z"/></svg></button>';
-  }
 
   function renderMusicBox() {
     var box = document.getElementById('musicBox');
     if (!box) return;
-    if (Preview) Preview.stop(); // 重畫推薦區（換一組、不喜歡…）前先停止試聽
+    if (Preview) Preview.stop();
     var prefs = Music.load();
     var mood = currentMood();
+    var lang = musicLang();
+    state.music.lang = lang;
+    var langSeg =
+      '<div class="seg langseg" role="group" aria-label="配樂語言">' +
+        '<button type="button" data-lang="all" aria-pressed="' + (lang === 'all') + '">全部</button>' +
+        '<button type="button" data-lang="zh" aria-pressed="' + (lang === 'zh') + '">中文</button>' +
+        '<button type="button" data-lang="en" aria-pressed="' + (lang === 'en') + '">英文</button>' +
+      '</div>';
     if (!Music.hasPrefs(prefs)) {
       box.innerHTML =
-        '<span class="section-label">配這組照片的歌</span>' +
-        '<div class="mb-empty">' +
-          '<p>還不知道你喜歡聽什麼。花半分鐘建立配樂偏好，我會依這組照片的氛圍推薦 3 首。</p>' +
-          (mood ? '<p class="mood small" id="moodLine">' + moodHTML(mood) + '</p>' : '') +
-          '<button class="btn btn-ghost btn-sm mt-16" type="button" id="toMusicSetup">' + I.note + '建立配樂偏好</button>' +
-        '</div>';
-      document.getElementById('toMusicSetup').addEventListener('click', function () { go('music?from=photos'); });
+        '<div class="mb-hero">' +
+          '<span class="section-label">配樂</span>' +
+          '<h2 class="h2 song-h">配一首歌</h2>' +
+          '<p class="lead">先在這裡告訴我你喜歡聽什麼。建好之後，推薦、試聽和語言切換都留在這一步，不用再跳頁。</p>' +
+          (mood ? '<p class="mood" id="moodLine">' + moodHTML(mood) + '</p>' : '') +
+          langSeg +
+        '</div>' +
+        '<div id="setupHost"></div>';
+      bindLangSeg(box);
+      renderInlineSetup(document.getElementById('setupHost'));
       return;
     }
     var M = state.music;
-    if (!M.recs) M.recs = Music.recommend(prefs, mood, { seed: M.seed, avoid: M.avoid });
+    if (!M.recs) M.recs = Music.recommend(prefs, mood, { seed: M.seed, avoid: M.avoid, lang: lang });
     box.innerHTML =
-      '<span class="section-label">配這組照片的歌</span>' +
-      (mood ? '<p class="mood" id="moodLine">' + moodHTML(mood) + '</p>' : '') +
+      '<div class="mb-hero">' +
+        '<span class="section-label">配樂</span>' +
+        '<h2 class="h2 song-h">配一首歌</h2>' +
+        '<p class="lead">依這組照片的氛圍挑 3 首。試聽是 Apple 的 30 秒聲音，頁面裡沒有影片。</p>' +
+        (mood ? '<p class="mood" id="moodLine">' + moodHTML(mood) + '</p>' : '') +
+        langSeg +
+      '</div>' +
       '<ol class="songs">' + M.recs.map(function (r, k) {
         var liked = prefs.likes.indexOf(r.id) >= 0;
         return '<li class="song" data-id="' + r.id + '">' +
           '<span class="song-no">' + pad2(k + 1) + '</span>' +
           '<div class="song-body">' +
             '<div class="song-top"><div><p class="song-t">' + esc(r.title) + '</p>' +
-            '<p class="song-a">' + esc(r.artist) + ' · ' + r.genre + '</p></div>' +
-            '<div class="song-pv">' + playBtnHTML(r.id, r.title, 'data-play') + '<span class="pv-hint">試聽</span></div></div>' +
-            '<div class="pv-slot" hidden></div>' +
+            '<p class="song-a">' + esc(r.artist) + ' · ' + r.genre + '</p></div></div>' +
+            '<div class="pv' + (k === 0 ? ' pv-lg' : '') + '" data-play="' + esc(r.id) + '"></div>' +
             '<p class="song-part"><span class="part">從' + r.part + '開始</span>' + r.partWhy + '</p>' +
             '<p class="song-why">' + r.why + '</p>' +
             '<div class="song-act">' +
@@ -1455,10 +1623,11 @@
       }).join('') + '</ol>' +
       '<div class="mb-foot">' +
         '<button class="link swap" type="button" id="moreSongs">' + I.swap + '換一組</button>' +
-        '<a class="link muted" href="#/music?from=photos">調整配樂偏好</a>' +
+        '<button class="link muted" type="button" id="openPrefs">調整我的配樂偏好</button>' +
       '</div>' +
+      '<div id="prefHost" hidden></div>' +
       '<p class="small mt-8">' + I.note.replace('<svg', '<svg class="ic-inline"') + '請到 IG App 加音樂時搜尋這首歌。留格不會把歌放進 IG。</p>' +
-      '<p class="small mt-8 pv-foot">試聽 15 秒：以 YouTube 官方影片為主（從建議段落開始，起始秒數為人工判斷，可能不精準）；播不了時改用 Apple Music 30 秒試聽片段。同時間只播一首。按下試聽才會連到 YouTube／Apple。</p>';
+      '<p class="small mt-8 pv-foot">試聽片段由 Apple Music 提供（約 30 秒）。同時間只播一首，按下播放鍵才會開始。</p>';
 
     qsa('[data-like]', box).forEach(function (b) {
       b.addEventListener('click', function () {
@@ -1479,7 +1648,7 @@
         Music.save(p);
         // 只換掉這一首，其他兩首不動
         var keep = M.recs.filter(function (r) { return r.id !== id; });
-        var fresh = Music.recommend(p, currentMood(), { seed: M.seed, avoid: M.avoid.concat(M.recs.map(function (r) { return r.id; })) })
+        var fresh = Music.recommend(p, currentMood(), { seed: M.seed, avoid: M.avoid.concat(M.recs.map(function (r) { return r.id; })), lang: musicLang() })
           .filter(function (r) { return !keep.some(function (k) { return k.id === r.id || k.artist === r.artist; }); });
         var idx = M.recs.map(function (r) { return r.id; }).indexOf(id);
         M.recs = M.recs.slice();
@@ -1488,30 +1657,66 @@
         renderMusicBox();
       });
     });
-    qsa('[data-play]', box).forEach(function (b) {
-      b.addEventListener('click', function () {
-        var song = Music.byId(b.getAttribute('data-play'));
-        var slot = qs('.pv-slot', b.closest('.song'));
-        if (song && slot) Preview.toggle(song, slot, b);
-      });
-    });
+    // 試聽：先查好 Apple previewUrl（只查不播），點播放鍵時才能在同一個點擊裡直接播放（iPhone Safari）
+    var recSongs = M.recs.map(function (r) { return Music.byId(r.id); }).filter(Boolean);
+    if (Preview) {
+      Preview.prefetch(recSongs);
+      qsa('[data-play]', box).forEach(function (el) { Preview.mount(el, Music.byId(el.getAttribute('data-play'))); });
+    }
     document.getElementById('moreSongs').addEventListener('click', function () {
-      M.avoid = M.avoid.concat(M.recs.map(function (r) { return r.id; })).slice(-24);
+      M.avoid = M.avoid.concat(M.recs.map(function (r) { return r.id; })).slice(-36);
       M.seed++; M.recs = null;
       renderMusicBox();
       var l = qs('.songs', box); if (l) { l.classList.remove('fade-swap'); void l.offsetWidth; l.classList.add('fade-swap'); }
     });
+    bindLangSeg(box);
+    var open = document.getElementById('openPrefs');
+    if (open) open.addEventListener('click', function () {
+      var host = document.getElementById('prefHost');
+      if (!host) return;
+      host.hidden = !host.hidden;
+      if (!host.hidden) renderPrefs(host, Music.load() || prefs);
+    });
+    if (state.music.focus) {
+      var host0 = document.getElementById('prefHost');
+      if (host0) { host0.hidden = false; renderPrefs(host0, prefs); }
+    }
+  }
+
+  function bindLangSeg(box) {
+    qsa('[data-lang]', box).forEach(function (b) {
+      b.addEventListener('click', function () {
+        setMusicLang(b.getAttribute('data-lang'));
+        state.music.recs = null;
+        renderMusicBox();
+      });
+    });
+  }
+
+  function renderInlineSetup(host) {
+    if (!host) return;
+    var M = state.music;
+    if (!M.draft) {
+      var p0 = Music.load() || Music.empty();
+      M.draft = { genres: p0.genres.slice(), artists: p0.artists.slice(), songs: p0.songs.length ? p0.songs.slice() : [{ t: '', a: '' }, { t: '', a: '' }, { t: '', a: '' }] };
+    }
+    host.innerHTML =
+      '<div class="tabs" role="tablist" aria-label="建立方式">' +
+        '<button type="button" role="tab" id="tabGenre" aria-selected="' + (M.tab === 'genre') + '">我知道自己的曲風</button>' +
+        '<button type="button" role="tab" id="tabSongs" aria-selected="' + (M.tab === 'songs') + '">說不上來，用歌來猜</button>' +
+      '</div><div id="tabBody" class="tab-body"></div>';
+    document.getElementById('tabGenre').addEventListener('click', function () { M.tab = 'genre'; renderInlineSetup(host); });
+    document.getElementById('tabSongs').addEventListener('click', function () { M.tab = 'songs'; renderInlineSetup(host); });
+    if (M.tab === 'genre') renderGenreTab(); else renderSongsTab();
   }
 
   /* =========================================================
      配樂偏好（#/music）：首次建立／設定頁
      ========================================================= */
   function viewMusic() {
-    var q = routeQuery();
-    if (q.from === 'photos') state.music.returnTo = 'photos';
-    var prefs = Music.load();
-    if (!Music.hasPrefs(prefs) || q.setup) viewMusicSetup();
-    else viewMusicSettings(prefs);
+    state.music.focus = true;
+    state.music.returnTo = 'photos';
+    go('photos');
   }
 
   function genreChips(selected, name) {
@@ -1519,30 +1724,105 @@
       return '<button type="button" class="gchip" data-g="' + esc(g) + '" data-set="' + name + '" aria-pressed="' + (selected.indexOf(g) >= 0) + '">' + I.check + '<span>' + esc(g) + '</span></button>';
     }).join('') + '</div>';
   }
-  function tagInputHTML(list, id, ph) {
+  function tagInputHTML(list, id) {
+    var ph = '輸入歌手名稱，按「加入」';
     return '<div class="tagin" id="' + id + '">' + list.map(function (a, i) {
       return '<span class="tag">' + esc(a) + '<button type="button" data-rm="' + i + '" aria-label="移除 ' + esc(a) + '">' + I.close + '</button></span>';
-    }).join('') + '<input type="text" placeholder="' + ph + '" aria-label="' + ph + '" enterkeyhint="done"></div>';
+    }).join('') +
+      '<div class="tagin-row"><input type="text" placeholder="' + ph + '" aria-label="' + ph + '" enterkeyhint="done" autocomplete="off">' +
+      '<button type="button" class="btn tag-add">加入</button></div>' +
+      '<ul class="suggest" hidden></ul><p class="suggest-note" hidden></p></div>';
   }
+  function sameArtist(a, b) { return window.Fuzzy && window.Fuzzy.norm(a) === window.Fuzzy.norm(b); }
   function bindTagInput(id, list, onChange) {
     var root = document.getElementById(id);
+    if (!root) return;
     var inp = qs('input', root);
-    function add() {
-      var parts = inp.value.split(/[,，、]/).map(function (s) { return s.trim(); }).filter(Boolean);
-      parts.forEach(function (v) { if (list.indexOf(v) < 0) list.push(v); });
-      if (parts.length) { inp.value = ''; onChange(); }
+    var addBtn = qs('.tag-add', root);
+    var ul = qs('.suggest', root);
+    var note = qs('.suggest-note', root);
+    var composing = false, hi = -1, items = [], timer = 0;
+    function dup(v) { return list.some(function (a) { return sameArtist(a, v); }); }
+    function addRaw(v) {
+      v = String(v || '').trim();
+      if (!v) return;
+      if (dup(v)) { toast('已經在清單裡了'); return; }
+      list.push(v); inp.value = ''; closeSug(); onChange();
+    }
+    function addPicked(it) {
+      var name = it.kind === 'song' ? it.artist : (it.name || it.artist);
+      addRaw(name);
+    }
+    function closeSug() { ul.hidden = true; note.hidden = true; ul.innerHTML = ''; items = []; hi = -1; }
+    function paint() {
+      if (!items.length && !note.textContent) { ul.hidden = true; return; }
+      ul.hidden = !items.length;
+      ul.innerHTML = items.map(function (it, i) {
+        var label = it.kind === 'song' ? esc(it.title) + ' — ' + esc(it.artist) : esc(it.name);
+        var tag = it.source === 'apple' ? 'Apple Music' : '內建';
+        return '<li><button type="button" data-i="' + i + '" class="' + (i === hi ? 'on' : '') + '"><span>' + label + '</span><em>' + tag + '</em></button></li>';
+      }).join('');
+    }
+    function searchNow() {
+      var q = inp.value.trim();
+      if (!q || composing) { closeSug(); return; }
+      items = window.Fuzzy ? window.Fuzzy.libraryHits(q, 'artist', 6) : [];
+      hi = items.length ? 0 : -1;
+      note.hidden = true; note.textContent = '';
+      paint();
+      if (window.Fuzzy) window.Fuzzy.itunes(q, 'musicArtist').then(function (rows) {
+        if (inp.value.trim() !== q || composing) return;
+        rows.forEach(function (r) {
+          if (items.length >= 6) return;
+          if (items.some(function (it) { return sameArtist(it.name, r.name); })) return;
+          items.push(r);
+        });
+        if (!items.length) {
+          note.hidden = false;
+          note.textContent = '找不到這位歌手，換個寫法試試';
+          items = [{ kind: 'raw', name: q, source: 'raw' }];
+          ul.innerHTML = '<li><button type="button" data-i="0"><span>直接加入「' + esc(q) + '」</span><em>未比對到</em></button></li>';
+          ul.hidden = false; hi = 0;
+          return;
+        }
+        hi = 0; paint();
+      });
+    }
+    function schedule() { clearTimeout(timer); timer = setTimeout(searchNow, 300); }
+    inp.addEventListener('compositionstart', function () { composing = true; closeSug(); });
+    inp.addEventListener('compositionend', function () { composing = false; schedule(); });
+    inp.addEventListener('input', function () { if (!composing) schedule(); });
+    function confirmKey() {
+      if (composing) return;
+      if (hi >= 0 && items[hi]) {
+        if (items[hi].kind === 'raw') addRaw(inp.value); else addPicked(items[hi]);
+      } else addRaw(inp.value);
     }
     inp.addEventListener('keydown', function (e) {
-      if (e.isComposing) return; // 注音輸入選字中不要搶 Enter
-      if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); add(); }
+      if (e.isComposing || composing) return;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        if (!items.length) return;
+        e.preventDefault();
+        hi = (hi + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+        paint();
+      }
+      if (e.key === 'Escape') { closeSug(); return; }
+      if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); confirmKey(); }
       if (e.key === 'Backspace' && !inp.value && list.length) { list.pop(); onChange(); }
     });
-    inp.addEventListener('blur', add);
+    addBtn.addEventListener('click', function () { if (!composing) confirmKey(); });
+    ul.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    ul.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-i]'); if (!b) return;
+      var it = items[Number(b.getAttribute('data-i'))];
+      if (!it) return;
+      if (it.kind === 'raw') addRaw(inp.value); else addPicked(it);
+    });
     root.addEventListener('click', function (e) {
       var b = e.target.closest('[data-rm]');
       if (b) { list.splice(Number(b.getAttribute('data-rm')), 1); onChange(); return; }
-      inp.focus();
     });
+    document.addEventListener('pointerdown', function (e) { if (!root.contains(e.target)) closeSug(); });
   }
   function bindGenreChips(root, list, onChange) {
     qsa('.gchip', root).forEach(function (b) {
@@ -1592,9 +1872,9 @@
     Music.save(p);
     state.music.draft = null; state.music.taste = null; state.music.recs = null;
     toast(msg || '已儲存配樂偏好');
-    if (state.music.returnTo === 'photos') { state.music.returnTo = null; go('photos'); }
-    else if (currentRoute() === 'music' && !routeQuery().setup) render();
-    else go('music');
+    if (currentRoute() === 'photos') { renderMusicBox(); return; }
+    state.music.focus = true;
+    go('photos');
   }
 
   function renderGenreTab() {
@@ -1603,7 +1883,7 @@
       '<span class="field-label">曲風（可複選）</span>' +
       genreChips(d.genres, 'setup') +
       '<span class="field-label mt-32">喜歡的歌手（可不填）</span>' +
-      tagInputHTML(d.artists, 'artistIn', '輸入歌手，按 Enter 加入') +
+      tagInputHTML(d.artists, 'artistIn') +
       '<p class="small mt-8">例如：陳綺貞、宇多田光、Norah Jones。</p>' +
       '<div class="actions mt-32"><button class="btn" type="button" id="saveGenre">儲存偏好 ' + I.arrow + '</button></div>';
     bindGenreChips(body, d.genres);
@@ -1690,81 +1970,74 @@
     });
   }
 
-  function viewMusicSettings(prefs) {
+  function renderPrefs(host, prefs) { viewMusicSettings(prefs, host); }
+  function viewMusicSettings(prefs, host) {
     var M = state.music;
-    if (Preview) Preview.stop();
+    if (Preview && !host) Preview.stop();
     var likes = prefs.likes.map(Music.byId).filter(Boolean), dislikes = prefs.dislikes.map(Music.byId).filter(Boolean);
-    $main.innerHTML =
-      '<div class="wrap screen"><div class="two music-set">' +
-        '<div class="stg">' +
-          '<span class="eyebrow">配樂偏好</span>' +
-          '<h1 class="h1">你的配樂偏好</h1>' +
-          '<p class="lead">品味會變，隨時改。這裡的每個改動都會自動儲存，下一次推薦就用新的。</p>' +
-          (prefs.summary ? '<blockquote class="taste-line q">' + esc(prefs.summary) + '</blockquote>' : '') +
-          '<p class="privacy">' + I.device + '偏好只存在這台裝置，不會上傳。</p>' +
-          '<div class="actions mt-24">' +
-            (M.returnTo === 'photos' ? '<button class="btn" type="button" id="backPhotos">回到整理照片 ' + I.arrow + '</button>' : '') +
-            '<button class="link muted" type="button" id="clearMusic">清除偏好</button>' +
-          '</div>' +
-        '</div>' +
-        '<div class="stg settings">' +
-          '<section><span class="section-label">曲風</span>' + genreChips(prefs.genres, 'set') + '</section>' +
-          '<section><span class="section-label">喜歡的歌手</span>' + tagInputHTML(prefs.artists, 'setArtists', '輸入歌手，按 Enter 加入') + '</section>' +
-          '<section><span class="section-label">喜歡的歌</span>' +
-            (prefs.songs.length ? '<ul class="songlist">' + prefs.songs.map(function (s, i) {
-              return '<li class="has-pv"><span><b>' + esc(s.t) + '</b><em>' + esc(s.a) + '</em></span>' +
-                '<span class="sl-act">' + playBtnHTML(String(i), s.t, 'data-uplay') +
-                '<button type="button" class="icon-btn" data-rmsong="' + i + '" aria-label="移除 ' + esc(s.t) + '">' + I.close + '</button></span>' +
-                '<div class="pv-slot" hidden></div></li>';
-            }).join('') + '</ul>' +
-            '<p class="small mt-8">試聽只用歌名＋歌手查 Apple 的公開 30 秒試聽片段（播 15 秒），找不到就請到 IG 搜尋。</p>' : '<p class="small">還沒有填歌。</p>') +
-            '<div class="addsong"><input type="text" id="newT" placeholder="歌名" aria-label="歌名"><input type="text" id="newA" placeholder="歌手" aria-label="歌手"><button class="btn btn-ghost btn-sm" type="button" id="addSong">加入</button></div>' +
-            '<button class="link muted mt-16" type="button" id="reTaste">用這些歌重新分析</button>' +
-            '<div id="tasteBox"></div>' +
-          '</section>' +
-          '<section><span class="section-label">推薦紀錄</span>' +
-            '<p class="small">喜歡的歌會讓同曲風多推一點；不喜歡的歌不會再出現，同一位歌手也會少推。</p>' +
-            recList('喜歡', likes, 'like') + recList('不喜歡', dislikes, 'dislike') +
-          '</section>' +
-        '</div>' +
-      '</div></div>';
+    var root = host || $main;
+    root.innerHTML =
+      '<div class="settings pref-panel">' +
+        '<p class="small">勾曲風、歌手、喜歡的歌、喜歡與不喜歡，都存在這台裝置。</p>' +
+        '<div class="actions"><button class="link muted" type="button" id="clearMusic">清除偏好</button></div>' +
+        '<section><span class="section-label">曲風</span>' + genreChips(prefs.genres, 'set') + '</section>' +
+        '<section><span class="section-label">喜歡的歌手</span>' + tagInputHTML(prefs.artists, 'setArtists') +
+          '<p class="small mt-8">輸入時會列出建議。重複的歌手不會再加一次。</p></section>' +
+        '<section><span class="section-label">喜歡的歌</span>' +
+          (prefs.songs.length ? '<ul class="songlist">' + prefs.songs.map(function (s, i) {
+            return '<li class="has-pv"><span><b>' + esc(s.t) + '</b><em>' + esc(s.a) + '</em></span>' +
+              '<span class="sl-act">' +
+              '<button type="button" class="icon-btn" data-rmsong="' + i + '" aria-label="移除 ' + esc(s.t) + '">' + I.close + '</button></span>' +
+              '<div class="pv" data-uplay="' + i + '"></div></li>';
+          }).join('') + '</ul>' +
+          '<p class="small mt-8">試聽片段由 Apple Music 提供（約 30 秒），只用歌名＋歌手查詢；找不到時可到 YouTube 搜尋（新分頁）。</p>' : '<p class="small">還沒有填歌。</p>') +
+          '<div class="addsong"><input type="text" id="newT" placeholder="歌名" aria-label="歌名" enterkeyhint="done" autocomplete="off"><input type="text" id="newA" placeholder="歌手" aria-label="歌手" enterkeyhint="done" autocomplete="off"><button class="btn" type="button" id="addSong">加入</button></div>' +
+          '<ul class="suggest" id="songSuggest" hidden></ul><p class="suggest-note" id="songSuggestNote" hidden></p>' +
+          '<button class="link muted mt-16" type="button" id="reTaste">用這些歌重新分析</button>' +
+          '<div id="tasteBox"></div>' +
+        '</section>' +
+        '<section><span class="section-label">推薦紀錄</span>' +
+          '<p class="small">喜歡的歌會讓同曲風多推一點；不喜歡的歌不會再出現，同一位歌手也會少推。</p>' +
+          recList('喜歡', likes, 'like') + recList('不喜歡', dislikes, 'dislike') +
+        '</section>' +
+      '</div>';
 
     var p = prefs;
+    function again() { viewMusicSettings(p, host || document.getElementById('prefHost') || $main); }
     function persist(msg) { Music.save(p); M.recs = null; toast(msg || '已儲存'); }
-    bindGenreChips(qs('.settings', $main), p.genres, function () { persist(); });
-    bindTagInput('setArtists', p.artists, function () { persist(); viewMusicSettings(p); });
-    qsa('[data-uplay]', $main).forEach(function (b) {
-      b.addEventListener('click', function () {
-        var sg = p.songs[Number(b.getAttribute('data-uplay'))];
-        if (!sg) return;
-        // 使用者自己加的歌：只查 iTunes，不做 YouTube 自動搜尋、不用 AI
-        Preview.toggle({ id: 'user:' + sg.t + '|' + sg.a, t: sg.t, a: sg.a, youtubeId: null }, qs('.pv-slot', b.closest('li')), b, { itunesOnly: true });
+    bindGenreChips(qs('.settings', root), p.genres, function () { persist(); });
+    bindTagInput('setArtists', p.artists, function () { persist(); again(); });
+    bindSongFieldSuggest(root, p, again);
+    if (Preview) {
+      var uSongs = p.songs.map(function (sg) { return { id: 'user:' + sg.t + '|' + sg.a, t: sg.t, a: sg.a, youtubeId: null }; });
+      Preview.prefetch(uSongs);
+      qsa('[data-uplay]', root).forEach(function (el) {
+        var u = uSongs[Number(el.getAttribute('data-uplay'))];
+        if (u) Preview.mount(el, u, { user: true });
       });
-    });
-    qsa('[data-rmsong]', $main).forEach(function (b) {
-      b.addEventListener('click', function () { p.songs.splice(Number(b.getAttribute('data-rmsong')), 1); persist('已移除'); viewMusicSettings(p); });
+    }
+    qsa('[data-rmsong]', root).forEach(function (b) {
+      b.addEventListener('click', function () { p.songs.splice(Number(b.getAttribute('data-rmsong')), 1); persist('已移除'); again(); });
     });
     document.getElementById('addSong').addEventListener('click', function () {
       var t = document.getElementById('newT').value.trim(), a = document.getElementById('newA').value.trim();
       if (!t || !a) { toast('歌名和歌手都要填'); return; }
-      p.songs.push({ t: t, a: a }); persist('已加入'); viewMusicSettings(p);
+      p.songs.push({ t: t, a: a }); persist('已加入'); again();
     });
     document.getElementById('reTaste').addEventListener('click', function () {
       if (p.songs.length < 3) { toast('至少要有 3 首歌才能分析'); return; }
       runTaste(p.songs, document.getElementById('tasteBox'), function (t) {
-        p.genres = t.genres.slice(); p.summary = t.sentence; persist('已更新曲風'); state.music.taste = null; viewMusicSettings(p);
+        p.genres = t.genres.slice(); p.summary = t.sentence; persist('已更新曲風'); state.music.taste = null; again();
       });
     });
-    qsa('[data-unrec]', $main).forEach(function (b) {
+    qsa('[data-unrec]', root).forEach(function (b) {
       b.addEventListener('click', function () {
         var id = b.getAttribute('data-unrec');
         p.likes = p.likes.filter(function (x) { return x !== id; });
         p.dislikes = p.dislikes.filter(function (x) { return x !== id; });
-        persist('已移除這筆紀錄'); viewMusicSettings(p);
+        persist('已移除這筆紀錄'); again();
       });
     });
-    var bp = document.getElementById('backPhotos');
-    if (bp) bp.addEventListener('click', function () { M.returnTo = null; go('photos'); });
     var clr = document.getElementById('clearMusic'), armed = false, t0;
     clr.addEventListener('click', function () {
       if (!armed) {
@@ -1775,7 +2048,74 @@
       clearTimeout(t0);
       Music.clear(); M.recs = null; M.draft = null; M.taste = null;
       toast('已清除配樂偏好');
-      render();
+      if (currentRoute() === 'photos') renderMusicBox(); else render();
+    });
+  }
+
+  function bindSongFieldSuggest(root, prefs, again) {
+    var tInp = document.getElementById('newT'), aInp = document.getElementById('newA');
+    var ul = document.getElementById('songSuggest'), note = document.getElementById('songSuggestNote');
+    if (!tInp || !ul || !window.Fuzzy) return;
+    var composing = false, items = [], hi = -1, timer = 0;
+    function close() { ul.hidden = true; if (note) note.hidden = true; items = []; hi = -1; }
+    function paint() {
+      ul.hidden = !items.length;
+      ul.innerHTML = items.map(function (it, i) {
+        var label = it.kind === 'song' ? esc(it.title) + ' — ' + esc(it.artist) : esc(it.name);
+        return '<li><button type="button" data-i="' + i + '" class="' + (i === hi ? 'on' : '') + '"><span>' + label + '</span><em>' + (it.source === 'apple' ? 'Apple Music' : it.source === 'raw' ? '未比對到' : '內建') + '</em></button></li>';
+      }).join('');
+    }
+    function fill(it) {
+      if (it.kind === 'raw') return;
+      if (it.title) tInp.value = it.title;
+      if (it.artist && aInp) aInp.value = it.artist;
+      close();
+    }
+    function searchNow() {
+      var q = (tInp.value || aInp.value || '').trim();
+      if (!q || composing) { close(); return; }
+      items = window.Fuzzy.libraryHits(q, 'song', 6);
+      hi = items.length ? 0 : -1;
+      paint();
+      window.Fuzzy.itunes(q, 'song').then(function (rows) {
+        if (composing) return;
+        rows.forEach(function (r) {
+          if (items.length >= 6) return;
+          if (items.some(function (it) { return window.Fuzzy.norm(it.title) === window.Fuzzy.norm(r.title) && window.Fuzzy.norm(it.artist) === window.Fuzzy.norm(r.artist); })) return;
+          items.push(r);
+        });
+        if (!items.length) {
+          if (note) { note.hidden = false; note.textContent = '找不到這首歌，換個寫法試試'; }
+          items = [{ kind: 'raw', name: q, title: tInp.value.trim(), artist: aInp ? aInp.value.trim() : '', source: 'raw' }];
+          hi = 0; paint();
+          return;
+        }
+        if (note) note.hidden = true;
+        hi = 0; paint();
+      });
+    }
+    function schedule() { clearTimeout(timer); timer = setTimeout(searchNow, 300); }
+    [tInp, aInp].forEach(function (inp) {
+      if (!inp) return;
+      inp.addEventListener('compositionstart', function () { composing = true; close(); });
+      inp.addEventListener('compositionend', function () { composing = false; schedule(); });
+      inp.addEventListener('input', function () { if (!composing) schedule(); });
+      inp.addEventListener('keydown', function (e) {
+        if (e.isComposing || composing) return;
+        if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && items.length) {
+          e.preventDefault();
+          hi = (hi + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+          paint();
+        }
+        if (e.key === 'Escape') close();
+        if (e.key === 'Enter' && items[hi] && items[hi].kind !== 'raw') { e.preventDefault(); fill(items[hi]); }
+      });
+    });
+    ul.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    ul.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-i]'); if (!b) return;
+      var it = items[Number(b.getAttribute('data-i'))];
+      if (it) fill(it);
     });
   }
   function recList(title, list, kind) {
@@ -1788,7 +2128,13 @@
   var VIEWS = { '': viewHome, upload: viewUpload, style: viewStyle, analysis: viewAnalysis, next: viewNext, photos: viewPhotos, music: viewMusic };
 
   // 給截圖／測試腳本與之後的除錯用
-  window.__app = { state: state, go: go, render: render, toast: toast };
+  window.__app = {
+    state: state, go: go, render: render, toast: toast,
+    orderKeys: function () {
+      return ensureOrder().map(function (it) { return it.t === 'n' ? 'n:' + it.id : 'o:' + it.k; });
+    },
+    pinList: pinList
+  };
 
   restoreShot(); // 重新整理後：從 sessionStorage 還原縮小的截圖（有的話）
   render();

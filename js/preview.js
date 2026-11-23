@@ -1,74 +1,71 @@
 /*
- * preview.js — 配樂試聽（第 5 步推薦歌、設定頁「喜歡的歌」）
+ * preview.js — 配樂試聽（第 5 步推薦歌、設定頁「喜歡的歌」）— 第四輪：只播聲音
  * ------------------------------------------------------------
- * 來源順序：
- *   1. YouTube IFrame Player（只用 js/music-library.js 裡、由 verified.json 寫入的 youtubeId）
- *      第一次按播放才動態載入 https://www.youtube.com/iframe_api；從 startSec 開始播 15 秒後自動停止。
- *   2. 備援：iTunes Search API（country=tw）找 previewUrl，用 <audio> 從 0 播 15 秒（Apple Music 30 秒試聽片段）。
- *      觸發條件：youtubeId 為 null、iframe_api 載入失敗或 8 秒逾時、YouTube onError（2／5／100／101／150）。
- *   3. 都沒有 → 只顯示「請到 IG 搜尋這首歌」。
- * 規則：同時間只播一首；換歌、換頁、換一組、頁面隱藏時立即停止。查詢結果存在記憶體快取。
- * 使用者自己加的歌（設定頁）只走 iTunes，不做 YouTube 自動搜尋、不用 AI。
+ * 來源：Apple／iTunes Search API 的 30 秒試聽（previewUrl），用一個共用的 <audio>（preload="none"、playsinline）播放。
+ *   - 不嵌入任何影片、不用 YouTube 播放器。
+ *   - 查詢：https://itunes.apple.com/search?term=<歌手 歌名>&entity=song&country=tw&limit=10
+ *     （回應帶 access-control-allow-origin: *，直接 fetch），以歌名＋歌手正規化比對；結果存在記憶體快取。
+ *   - 從 0 開始播整段（約 30 秒），到結尾自動停止並重置。
+ * 沒有 Apple 試聽：
+ *   - music-library.js 標 itunesPreview=false 的歌（依 tools/music-lookup/verified.json）→ 一開始就顯示「到 YouTube 聽 ↗」外部連結。
+ *   - 執行期查不到／比對不到／音檔載入錯誤 → 有已驗證 youtubeId：「到 YouTube 聽 ↗」；youtubeId 為 null：「到 YouTube 搜尋 ↗」。
+ *     絕不編造 youtubeId。
+ *   - 使用者自己加的歌（設定頁）：只查 Apple，沒有就顯示「沒有找到試聽」＋「到 YouTube 搜尋 ↗」。
+ * iPhone Safari：
+ *   - 絕不自動播放；audio.play() 只在使用者點擊播放鍵的事件處理中呼叫。
+ *   - 推薦區出現時先 prefetch（只查 previewUrl、不播），點擊時就能同步 play()。
+ *   - 若點擊時還沒查好：當下先 load() 共用的 <audio> 解鎖，查到後再 play()；被拒（NotAllowedError）就顯示「再按一次播放」，第二次點擊直接播。
+ * 規則：同時間只播一首；按另一首、換一組、換頁、推薦區被移除、頁面隱藏（visibilitychange）、pagehide 時立刻 pause() 並重置。
  *
  * 公開介面（window.Preview）：
- *   Preview.toggle(song, slotEl, btnEl, { itunesOnly })   song = { id, t, a, youtubeId, startSec, ytNote }
+ *   Preview.mount(el, song, opts)   在 el 裡放播放鍵＋細進度線＋剩餘秒數（或外部連結）
+ *       song = { id, t, a, youtubeId, startSec, ytNote, itunesPreview }；opts = { user: true } 表示使用者自己加的歌
+ *   Preview.prefetch(list)          list = [{ t, a }]，只查不播
  *   Preview.stop()
- *   Preview.current()  → 正在播的 song id 或 null
+ *   Preview.current()               正在播（或載入中）的 song id 或 null
  *   Preview.itunesLookup(title, artist) → Promise<{ previewUrl, trackName, artistName } | null>
  */
 (function () {
   'use strict';
 
-  var CLIP = 15;               // 試聽秒數
-  var YT_TIMEOUT = 8000;       // iframe_api 載入逾時
-  var cur = null;              // { id, song, slot, btn, kind:'yt'|'audio', player, audio, elapsed, t0, paused, timer, done }
-  var ytP = null;              // iframe_api 載入中的 Promise
-  var itCache = {};            // iTunes 查詢快取
-  var seq = 0;
+  var CLIP = 30;               // Apple 試聽片段長度（實際以 audio.duration 為準）
+  var LOOKUP_TIMEOUT = 8000;
+  var cur = null;              // { song, el, opts, url, state:'loading'|'playing'|'paused'|'retry' }
+  var audio = null;            // 共用的 <audio>
+  var itCache = {};            // iTunes 查詢快取：key → hit | null
+  var itPending = {};          // 查詢中的 Promise
+  var watch = 0;               // 播放／載入期間檢查推薦區是否還在畫面上
 
   var ICON = {
     play: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.5v9l7-4.5z"/></svg>',
     pause: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.5v9M10.5 3.5v9"/></svg>',
-    stop: '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8"/></svg>'
+    spin: '<svg class="pv-spin" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5a5.5 5.5 0 1 1-5.5 5.5"/></svg>'
   };
 
   function esc(s) {
-    return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
   }
 
-  /* ---------- YouTube IFrame API：第一次用到才載入 ---------- */
-  function loadYT() {
-    if (window.YT && window.YT.Player) return Promise.resolve(window.YT);
-    if (ytP) return ytP;
-    ytP = new Promise(function (resolve, reject) {
-      var done = false;
-      var prev = window.onYouTubeIframeAPIReady;
-      window.onYouTubeIframeAPIReady = function () {
-        if (typeof prev === 'function') try { prev(); } catch (e) {}
-        if (!done) { done = true; resolve(window.YT); }
-      };
-      var s = document.createElement('script');
-      s.src = 'https://www.youtube.com/iframe_api';
-      s.async = true;
-      s.onerror = function () { if (!done) { done = true; reject(new Error('iframe_api 載入失敗')); } };
-      document.head.appendChild(s);
-      setTimeout(function () { if (!done) { done = true; reject(new Error('iframe_api 逾時')); } }, YT_TIMEOUT);
-    });
-    ytP.catch(function () { ytP = null; }); // 下次再試
-    return ytP;
-  }
-
-  /* ---------- iTunes Search API（回應有 CORS 標頭，可直接 fetch） ---------- */
+  /* ---------- iTunes Search API ---------- */
   function norm(s) {
     return String(s || '').toLowerCase()
       .replace(/[（(\[【].*?[）)\]】]/g, '')
       .replace(/[\s　·・.,'’"&\-–—!?！？〜~]/g, '');
   }
+  function keyOf(title, artist) { return norm(title) + '|' + norm(artist); }
+  function cached(title, artist) { return itCache[keyOf(title, artist)]; }
+
   function itunesLookup(title, artist) {
-    var key = norm(title) + '|' + norm(artist);
+    var key = keyOf(title, artist);
     if (itCache[key] !== undefined) return Promise.resolve(itCache[key]);
-    var url = 'https://itunes.apple.com/search?term=' + encodeURIComponent(artist + ' ' + title) + '&entity=song&country=tw&limit=5';
-    return fetch(url).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }).then(function (j) {
+    if (itPending[key]) return itPending[key];
+    var url = 'https://itunes.apple.com/search?term=' + encodeURIComponent(artist + ' ' + title) + '&entity=song&country=tw&limit=10';
+    var ctl = window.AbortController ? new AbortController() : null;
+    var to = setTimeout(function () { if (ctl) ctl.abort(); }, LOOKUP_TIMEOUT);
+    var p = fetch(url, ctl ? { signal: ctl.signal } : undefined).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (j) {
       var nt = norm(title), na = norm(artist), hit = null;
       (j.results || []).some(function (x) {
         if (!x.previewUrl) return false;
@@ -80,182 +77,201 @@
       });
       itCache[key] = hit;
       return hit;
-    }, function () { return null; }); // 網路錯誤不快取，下次再試
+    }, function () { return null; }) // 網路錯誤／逾時不快取，下次再試
+      .then(function (v) { clearTimeout(to); delete itPending[key]; return v; });
+    itPending[key] = p;
+    return p;
   }
 
-  /* ---------- 畫面 ---------- */
-  function setBtn(btn, playing) {
-    if (!btn) return;
-    btn.setAttribute('aria-pressed', String(!!playing));
-    btn.setAttribute('aria-label', (playing ? '停止試聽：' : '試聽 15 秒：') + (btn.getAttribute('data-title') || ''));
-    btn.innerHTML = playing ? ICON.stop : ICON.play;
-    btn.classList.toggle('on', !!playing);
-  }
-  function shell(c, msg) {
-    c.slot.innerHTML =
-      '<div class="pv-box" role="group" aria-label="試聽">' +
-        '<div class="pv-media" id="pvMedia' + c.n + '"></div>' +
-        '<div class="pv-ctrl">' +
-          '<button type="button" class="pv-pp" aria-label="暫停">' + ICON.pause + '</button>' +
-          '<div class="pv-track"><span class="pv-bar"></span></div>' +
-          '<span class="pv-left" aria-live="off">' + CLIP + ' 秒</span>' +
-          '<button type="button" class="pv-stop" aria-label="停止">' + ICON.stop + '</button>' +
-        '</div>' +
-        '<p class="pv-meta"><span class="pv-src">' + esc(msg || '讀取中…') + '</span><span class="pv-clip">試聽 15 秒</span></p>' +
-        '<p class="pv-note small"></p>' +
-      '</div>';
-    c.slot.hidden = false;
-    c.slot.querySelector('.pv-pp').addEventListener('click', function () { togglePause(c); });
-    c.slot.querySelector('.pv-stop').addEventListener('click', function () { stop(); });
-  }
-  function meta(c, src, note) {
-    if (cur !== c) return;
-    var s = c.slot.querySelector('.pv-src'), n = c.slot.querySelector('.pv-note');
-    if (s) s.textContent = src;
-    if (n) n.textContent = note || '';
-  }
-  function tick(c) {
-    if (cur !== c) return;
-    var el = c.elapsed + (c.paused || !c.t0 ? 0 : (performance.now() - c.t0) / 1000);
-    var bar = c.slot.querySelector('.pv-bar'), left = c.slot.querySelector('.pv-left');
-    if (bar) bar.style.width = Math.min(100, el / CLIP * 100) + '%';
-    if (left) left.textContent = Math.max(0, Math.ceil(CLIP - el)) + ' 秒';
-    if (el >= CLIP) { stop(); return; }
-  }
-  function started(c) {
-    if (cur !== c || c.t0) return;
-    c.t0 = performance.now(); c.paused = false;
-    c.slot.classList.add('playing');
-    c.timer = setInterval(function () { tick(c); }, 200);
-  }
-  function togglePause(c) {
-    if (cur !== c) return;
-    var pp = c.slot.querySelector('.pv-pp');
-    if (!c.paused) {
-      if (c.t0) c.elapsed += (performance.now() - c.t0) / 1000;
-      c.t0 = 0; c.paused = true;
-      if (c.player && c.player.pauseVideo) c.player.pauseVideo();
-      if (c.audio) c.audio.pause();
-      pp.innerHTML = ICON.play; pp.setAttribute('aria-label', '繼續播放');
-    } else {
-      c.paused = false;
-      if (c.player && c.player.playVideo) c.player.playVideo();
-      if (c.audio) c.audio.play().catch(function () {});
-      c.t0 = performance.now();
-      pp.innerHTML = ICON.pause; pp.setAttribute('aria-label', '暫停');
-    }
-    tick(c);
+  function prefetch(list) {
+    (list || []).forEach(function (s) { if (s && s.t && s.a && s.itunesPreview !== false) itunesLookup(s.t, s.a); });
   }
 
-  /* ---------- 播放 ---------- */
-  function playYT(c) {
-    var s = c.song;
-    meta(c, 'YouTube · 讀取中…', '');
-    return loadYT().then(function (YT) {
-      if (cur !== c) return;
-      var host = document.createElement('div');
-      c.slot.querySelector('.pv-media').appendChild(host);
-      var start = Math.max(0, Math.round(s.startSec || 0));
-      var fellBack = false;
-      var waitT = setTimeout(function () {
-        // 準備好了卻遲遲沒開始播（多半是自動播放被擋）：提示直接點影片
-        if (cur === c && !c.t0) meta(c, 'YouTube', '沒有自動開始的話，請直接點一下影片播放。');
-      }, 4000);
-      c.player = new YT.Player(host, {
-        width: 320, height: 180, videoId: s.youtubeId,
-        playerVars: { start: start, end: start + CLIP, playsinline: 1, controls: 1, modestbranding: 1, rel: 0, autoplay: 1, fs: 0, iv_load_policy: 3, origin: location.protocol === 'file:' ? undefined : location.origin },
-        events: {
-          onReady: function (e) { if (cur === c) { try { e.target.playVideo(); } catch (x) {} } },
-          onStateChange: function (e) {
-            if (cur !== c) return;
-            if (e.data === YT.PlayerState.PLAYING) { clearTimeout(waitT); started(c); meta(c, 'YouTube' + (s.ytNote ? '・' + s.ytNote : ''), '從第 ' + start + ' 秒開始。起始秒數為人工判斷，可能不精準。'); }
-            if (e.data === YT.PlayerState.ENDED) stop();
-          },
-          onError: function (e) {
-            clearTimeout(waitT);
-            if (cur !== c || fellBack) return;
-            fellBack = true;
-            // 2 參數錯誤、5 HTML5 播放器錯誤、100 影片不存在、101／150 不允許嵌入 → 都改用 Apple 試聽
-            try { c.player.destroy(); } catch (x) {}
-            c.player = null;
-            c.slot.querySelector('.pv-media').innerHTML = '';
-            playAudio(c, 'YouTube 無法播放（錯誤 ' + e.data + '），改用 Apple 試聽');
-          }
-        }
-      });
-    }, function () {
-      if (cur !== c) return;
-      playAudio(c, 'YouTube 載入失敗，改用 Apple 試聽');
+  /* ---------- 外部連結（絕不編造 youtubeId） ---------- */
+  function ytWatch(song) {
+    return 'https://www.youtube.com/watch?v=' + encodeURIComponent(song.youtubeId) + '&t=' + Math.max(0, Math.round(song.startSec || 0)) + 's';
+  }
+  function ytSearch(song) {
+    return 'https://www.youtube.com/results?search_query=' + encodeURIComponent(song.t + ' ' + song.a);
+  }
+  // why: 'none' 一開始就知道沒有 Apple 試聽；'fail' 執行期查不到／載入失敗
+  function renderLink(el, song, opts, why) {
+    var watch = !opts.user && song.youtubeId;
+    var href = watch ? ytWatch(song) : ytSearch(song);
+    var label = watch ? '到 YouTube 聽 ↗' : '到 YouTube 搜尋 ↗';
+    var note;
+    if (opts.user) note = '會在新分頁開 YouTube 搜尋結果。';
+    else if (why === 'none') note = '這首沒有 Apple 試聽，會在新分頁開 YouTube。';
+    else note = '沒有找到 Apple 試聽，會在新分頁開 YouTube' + (watch ? '。' : ' 搜尋結果。');
+    if (watch) note += '從建議段落開始（人工估計）' + (song.ytNote ? '，' + song.ytNote : '') + '。';
+    el.innerHTML =
+      '<div class="pv-ext">' +
+        (opts.user ? '<span class="pv-none">沒有找到試聽</span>' : '') +
+        '<a class="pv-link" href="' + esc(href) + '" target="_blank" rel="noopener" aria-label="' + esc(label.replace(' ↗', '') + '：' + song.t + '（另開新分頁）') + '">' + esc(label) + '</a>' +
+      '</div>' +
+      '<p class="pv-meta"><span class="pv-msg">' + esc(note) + '</span></p>';
+    el.classList.add('is-ext');
+  }
+
+  /* ---------- 播放器畫面 ---------- */
+  function renderPlayer(el, song) {
+    el.classList.remove('is-ext');
+    el.innerHTML =
+      '<div class="pv-ctl">' +
+        '<button type="button" class="pv-btn" aria-pressed="false" aria-label="播放試聽：' + esc(song.t) + '">' + ICON.play + '</button>' +
+        '<div class="pv-track" aria-hidden="true"><span class="pv-bar"></span></div>' +
+        '<span class="pv-left">' + CLIP + ' 秒</span>' +
+      '</div>' +
+      '<p class="pv-meta"><span class="pv-src">Apple Music 試聽</span><span class="pv-msg" aria-live="polite"></span></p>';
+  }
+
+  function ui(c) {
+    return { btn: c.el.querySelector('.pv-btn'), bar: c.el.querySelector('.pv-bar'), left: c.el.querySelector('.pv-left'), msg: c.el.querySelector('.pv-msg') };
+  }
+  function setState(c, st, msg) {
+    c.state = st;
+    var u = ui(c);
+    if (!u.btn) return;
+    var t = c.song.t;
+    if (st === 'loading') { u.btn.innerHTML = ICON.spin; u.btn.setAttribute('aria-label', '載入中，按一下取消：' + t); u.btn.setAttribute('aria-pressed', 'true'); }
+    else if (st === 'playing') { u.btn.innerHTML = ICON.pause; u.btn.setAttribute('aria-label', '暫停試聽：' + t); u.btn.setAttribute('aria-pressed', 'true'); }
+    else { u.btn.innerHTML = ICON.play; u.btn.setAttribute('aria-label', (st === 'paused' ? '繼續播放：' : '播放試聽：') + t); u.btn.setAttribute('aria-pressed', 'false'); }
+    u.btn.classList.toggle('on', st !== 'idle');
+    c.el.classList.toggle('is-on', st !== 'idle');
+    if (u.msg) u.msg.textContent = msg || (st === 'loading' ? '讀取中…' : st === 'paused' ? '已暫停' : '');
+  }
+  function progress(c) {
+    var u = ui(c);
+    var d = audio && isFinite(audio.duration) && audio.duration > 0 ? Math.min(audio.duration, CLIP) : CLIP;
+    var t = audio ? Math.min(audio.currentTime || 0, d) : 0;
+    if (u.bar) u.bar.style.width = (t / d * 100) + '%';
+    if (u.left) u.left.textContent = Math.max(0, Math.ceil(d - t)) + ' 秒';
+  }
+  function resetUI(c) {
+    setState(c, 'idle');
+    var u = ui(c);
+    if (u.bar) u.bar.style.width = '0%';
+    if (u.left) u.left.textContent = CLIP + ' 秒';
+  }
+
+  /* ---------- 共用 <audio> ---------- */
+  function getAudio() {
+    if (audio) return audio;
+    audio = document.createElement('audio');
+    audio.preload = 'none';
+    audio.setAttribute('playsinline', '');
+    audio.setAttribute('webkit-playsinline', '');
+    audio.addEventListener('playing', function () { if (cur && cur.url) setState(cur, 'playing'); });
+    audio.addEventListener('waiting', function () { if (cur && cur.state === 'playing') setState(cur, 'loading'); });
+    audio.addEventListener('timeupdate', function () {
+      if (!cur || !cur.url) return;
+      if (!cur.el.isConnected) { stop(); return; }  // 推薦區被重畫或移除
+      progress(cur);
+      if (audio.currentTime >= CLIP) stop();
     });
-  }
-
-  function playAudio(c, why) {
-    var s = c.song;
-    c.kind = 'audio';
-    meta(c, 'Apple 試聽 · 查詢中…', why || '');
-    return itunesLookup(s.t, s.a).then(function (hit) {
-      if (cur !== c) return;
-      if (!hit) { none(c); return; }
-      var a = new Audio();
-      a.preload = 'auto';
-      a.src = hit.previewUrl;
-      c.audio = a;
-      a.addEventListener('playing', function () { started(c); });
-      a.addEventListener('ended', function () { if (cur === c) stop(); });
-      a.addEventListener('error', function () { if (cur === c) none(c); });
-      meta(c, 'Apple 試聽', (why ? why + '。' : '') + 'Apple Music 30 秒試聽片段，從頭播 15 秒。');
-      var p = a.play();
-      if (p && p.catch) p.catch(function () {
-        // 非使用者手勢的播放被擋（iOS）：給一顆按鈕讓使用者點
-        if (cur !== c) return;
-        var pp = c.slot.querySelector('.pv-pp');
-        c.paused = true; pp.innerHTML = ICON.play; pp.setAttribute('aria-label', '播放');
-        meta(c, 'Apple 試聽', '按左邊的播放鍵開始。Apple Music 30 秒試聽片段。');
-      });
+    audio.addEventListener('ended', function () { if (cur) stop(); });
+    audio.addEventListener('error', function () {
+      if (!cur || !cur.url || !audio.getAttribute('src')) return;
+      fail(cur);
     });
+    return audio;
   }
 
-  function none(c) {
-    if (cur !== c) return;
-    c.slot.innerHTML = '<p class="pv-none small">這首找不到可以試聽的版本。請到 IG 加音樂時搜尋「' + esc(c.song.t) + '」。</p>';
-    c.slot.hidden = false;
-    setBtn(c.btn, false);
-    clearInterval(c.timer);
-    c.done = true;
+  function release() {
+    if (!audio) return;
+    try { audio.pause(); } catch (e) {}
+    if (audio.getAttribute('src')) { audio.removeAttribute('src'); try { audio.load(); } catch (e) {} }
   }
 
   function stop() {
     var c = cur;
     if (!c) return;
     cur = null;
-    clearInterval(c.timer);
-    if (c.player) { try { c.player.stopVideo(); } catch (e) {} try { c.player.destroy(); } catch (e) {} }
-    if (c.audio) { try { c.audio.pause(); c.audio.removeAttribute('src'); c.audio.load(); } catch (e) {} }
-    setBtn(c.btn, false);
-    if (c.slot && !c.done) { c.slot.innerHTML = ''; c.slot.hidden = true; c.slot.classList.remove('playing'); }
+    clearInterval(watch);
+    release();
+    resetUI(c);
   }
 
-  function toggle(song, slot, btn, opts) {
-    opts = opts || {};
-    if (cur && cur.id === song.id && cur.slot === slot) { stop(); return; }
+  // 執行期失敗：改成外部連結
+  function fail(c) {
+    if (cur === c) { cur = null; clearInterval(watch); release(); }
+    renderLink(c.el, c.song, c.opts, 'fail');
+  }
+
+  // 在使用者點擊（或第二次點擊）的處理中呼叫
+  function startWith(c, url) {
+    var a = getAudio();
+    c.url = url;
+    a.src = url;
+    try { a.currentTime = 0; } catch (e) {}
+    setState(c, 'loading');
+    var p;
+    try { p = a.play(); } catch (e) { p = Promise.reject(e); }
+    if (p && p.catch) p.catch(function (err) {
+      if (cur !== c) return;
+      if (err && err.name === 'NotAllowedError') setState(c, 'retry', '再按一次播放');
+      else if (err && err.name === 'AbortError') { /* 被下一個動作中斷，忽略 */ }
+      else fail(c);
+    });
+  }
+
+  function onClick(c) {
+    // 同一首：播放中 → 暫停；暫停／再按一次 → 播；載入中 → 取消
+    if (cur && cur.el === c.el) {
+      var a = getAudio();
+      if (cur.state === 'playing') { a.pause(); setState(cur, 'paused'); return; }
+      if (cur.state === 'paused' || cur.state === 'retry') {
+        var cc = cur;
+        setState(cc, 'loading');
+        var p = a.play();
+        if (p && p.catch) p.catch(function (err) { if (cur === cc) setState(cc, err && err.name === 'NotAllowedError' ? 'retry' : 'paused', err && err.name === 'NotAllowedError' ? '再按一次播放' : ''); });
+        return;
+      }
+      stop(); return;
+    }
     stop();
-    var c = { id: song.id, song: song, slot: slot, btn: btn, elapsed: 0, t0: 0, paused: false, n: ++seq };
     cur = c;
-    setBtn(btn, true);
-    shell(c);
-    if (!opts.itunesOnly && song.youtubeId) { c.kind = 'yt'; playYT(c); }
-    else playAudio(c, song.youtubeId === null && !opts.itunesOnly ? '這首沒有可驗證的 YouTube 官方版本' : '');
+    // 推薦區被重畫、關閉或整個移除（元素離開畫面）→ 立刻停，載入中也一樣
+    watch = setInterval(function () { if (cur && !cur.el.isConnected) stop(); }, 400);
+    var s = c.song, a2 = getAudio();
+    var hit = cached(s.t, s.a);
+    if (hit) { startWith(c, hit.previewUrl); return; }   // 已預先查好：同步 play()
+    if (hit === null) { fail(c); return; }              // 已確定查不到
+    // 還沒查好：在點擊當下先解鎖 <audio>，查到後再播
+    setState(c, 'loading', '查詢 Apple 試聽…');
+    try { a2.removeAttribute('src'); a2.load(); } catch (e) {}
+    itunesLookup(s.t, s.a).then(function (h) {
+      if (cur !== c) return;
+      if (!h) { fail(c); return; }
+      startWith(c, h.previewUrl);
+    });
   }
 
-  // 頁面被切到背景：立刻停
+  function mount(el, song, opts) {
+    if (!el || !song) return;
+    opts = opts || {};
+    if (cur && cur.el === el) stop();
+    if (!opts.user && song.itunesPreview === false) { renderLink(el, song, opts, 'none'); return; }
+    var hit = cached(song.t, song.a);
+    if (hit === null) { renderLink(el, song, opts, 'fail'); return; }
+    renderPlayer(el, song);
+    var c = { song: song, el: el, opts: opts, url: null, state: 'idle' };
+    el.querySelector('.pv-btn').addEventListener('click', function () { onClick(c); });
+  }
+
+  // 頁面被切到背景或離開：立刻停
   document.addEventListener('visibilitychange', function () { if (document.hidden) stop(); });
   window.addEventListener('pagehide', stop);
 
   window.Preview = {
-    CLIP: CLIP, toggle: toggle, stop: stop, itunesLookup: itunesLookup,
-    current: function () { return cur ? cur.id : null; },
-    // 給截圖腳本：在無頭瀏覽器無法真的播放 YouTube 時，把介面設成「播放中」的樣子
-    _debugState: function () { return cur && { id: cur.id, kind: cur.kind, elapsed: cur.elapsed, t0: cur.t0, paused: cur.paused, hasAudio: !!cur.audio, hasPlayer: !!cur.player }; },
-    _fakePlaying: function (sec) { if (!cur) return; cur.elapsed = sec || 0; started(cur); tick(cur); }
+    CLIP: CLIP, mount: mount, prefetch: prefetch, stop: stop, itunesLookup: itunesLookup,
+    current: function () { return cur ? cur.song.id : null; },
+    // 給截圖／測試腳本：讀目前狀態
+    _debugState: function () {
+      return cur && { id: cur.song.id, state: cur.state, url: cur.url ? cur.url.slice(0, 60) + '…' : null,
+        currentTime: audio ? Math.round(audio.currentTime * 10) / 10 : 0, paused: audio ? audio.paused : true };
+    },
+    // 給測試腳本：跳到第 t 秒（驗證播到結尾會自動停止）
+    _debugSeek: function (t) { if (cur && audio) audio.currentTime = t; }
   };
 })();

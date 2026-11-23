@@ -288,6 +288,41 @@
     return out;
   }
 
+  /* 切主頁截圖「貼文區上緣以上」的上半部，寬度與貼文區相同。
+   * 手機可去掉狀態列。手動框、沒有框、切出來太矮 → 回傳 null，改走仿版頭。 */
+  function cropProfileChrome(img, grid) {
+    if (!img || !grid || !grid.ok || grid.mode === 'manual' || !grid.box) return null;
+    var b = grid.box;
+    var iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+    var x = Math.max(0, Math.round(b.x));
+    var w = Math.round(b.w);
+    if (x + w > iw) w = iw - x;
+    var y1 = Math.max(0, Math.round(b.y));
+    var y0 = 0;
+    var phone = grid.kind === 'phone' || (grid.cls && grid.cls.kind === 'phone');
+    if (phone) {
+      var skip = Math.round(Math.min(ih * 0.028, 72));
+      if (y1 - skip > 48) y0 = skip;
+    }
+    if (w < 40 || y1 - y0 < 36) return null;
+    var scale = Math.min(1, 960 / w);
+    var cv = document.createElement('canvas');
+    cv.width = Math.max(1, Math.round(w * scale));
+    cv.height = Math.max(1, Math.round((y1 - y0) * scale));
+    cv.getContext('2d').drawImage(img, x, y0, w, y1 - y0, 0, 0, cv.width, cv.height);
+    var nav = null;
+    var y2 = Math.round(b.y + b.h);
+    var navH = Math.round(Math.min(Math.max(0, ih - y2), ih * 0.09));
+    if (navH > 18 && y2 < ih - 4) {
+      var nc = document.createElement('canvas');
+      nc.width = cv.width;
+      nc.height = Math.max(1, Math.round(navH * scale));
+      nc.getContext('2d').drawImage(img, x, Math.min(y2, ih - 1), w, Math.min(navH, ih - y2), 0, 0, nc.width, nc.height);
+      nav = nc.toDataURL('image/jpeg', 0.85);
+    }
+    return { url: cv.toDataURL('image/jpeg', 0.86), nav: nav, theme: grid.theme || 'light', w: cv.width, h: cv.height };
+  }
+
   window.Grid = {
     EARTH: EARTH,
     MINI: MINI,
@@ -299,6 +334,7 @@
     drawCell: drawCell,
     makeDemoScreenshot: makeDemoScreenshot,
     cropExistingCells: cropExistingCells,
+    cropProfileChrome: cropProfileChrome,
     mix: mix
   };
 })();
