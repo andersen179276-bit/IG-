@@ -7,21 +7,25 @@
 - **第 3、4 步**：總評、五個面向、建議和拍攝卡都是寫死的示範內容。
 - **格子區偵測**：真的會做。在瀏覽器本地用 canvas 分析像素，找出貼文在哪裡、有幾篇。
 - **建議封存**：依偵測結果在本地挑選。
-- **第 5 步**：照片編輯、照片氛圍、配樂推薦、zip 打包，全部在瀏覽器本地完成。
+- **截圖分類**（第三輪）：先判斷是手機、電腦、iPad 截圖，手機走「IG App 版型定位」，電腦／iPad 走通用格線偵測。
+- **第 5 步**：照片編輯、照片氛圍、配樂推薦、「暫時拿掉」既有貼文（模擬封存）、zip 打包，全部在瀏覽器本地完成。
+- **試聽**（第三輪）：推薦的歌可以試聽 15 秒。這是唯一會連外的功能，而且要按下試聽才會連（YouTube 播放器，或用歌名＋歌手查 Apple 的公開試聽）。
 
-第一輪版本備份在 `_archive/v1/`。
+第一輪版本備份在 `_archive/v1/`，第二輪在 `_archive/v2/`。
 
 ## 怎麼打開
 
-**方法一：直接雙擊** `index.html`。所有 JS 都是一般的 `<script>`，`file://` 也能用。
+**方法一：直接雙擊** `index.html`。所有 JS 都是一般的 `<script>`，`file://` 也能用（試聽的 YouTube 播放器在 `file://` 下可能被拒，會自動改用 Apple 試聽）。
 
 **方法二：本機 server**（行為最接近正式環境）
 
 ```bash
 cd /workspace/ig-layout-app
 python3 -m http.server 8765 --bind 127.0.0.1
-# 開 http://127.0.0.1:8765/
+# 開 http://localhost:8765/
 ```
+
+注意：YouTube 嵌入播放器會拒絕「IP 位址」當來源（`http://127.0.0.1` 會得到錯誤 150），請用 `localhost` 或正式網域開；拒絕時程式會自動改用 Apple 試聽。
 
 字體來自 Google Fonts CDN（免費）。離線時會改用系統字體。
 
@@ -30,11 +34,11 @@ python3 -m http.server 8765 --bind 127.0.0.1
 | 路由 | 畫面 |
 |---|---|
 | `#/` | 首頁 |
-| `#/upload` | 01 上傳主頁截圖。上傳後立刻偵測，顯示「找到貼文區：N 篇貼文」 |
+| `#/upload` | 01 上傳主頁截圖。讀取中顯示細線轉圈「正在讀取主頁…」；完成後顯示「偵測到：手機截圖」＋「手機｜電腦」切換、「找到貼文區：N 篇貼文」 |
 | `#/style` | 02 選類型（6 種） |
-| `#/analysis` | 03 分析：截圖上會畫出偵測框、編號貼文、標出空格和建議封存的格子，也可以手動拖框 |
+| `#/analysis` | 03 分析：分類與切換、偵測框、編號貼文、空格、建議封存；不確定時問「這是手機還是電腦截圖？」；可以手動拖框 |
 | `#/next` | 04 下一篇拍什麼 |
-| `#/photos` | 05 整理新照片，包含配這組照片的歌、zip 下載、逐張下載 |
+| `#/photos` | 05 整理新照片：逐張讀取（「正在讀取第 n／N 張…」）、九宮格預覽＋既有貼文「拿掉」與「已拿掉」區、配這組照片的歌＋試聽、zip 下載、逐張下載 |
 | `#/music` | 配樂偏好。沒有偏好時是建立流程，有偏好時是設定頁。從 header 的音符圖示進入 |
 
 ## 檔案結構
@@ -44,8 +48,9 @@ index.html              外殼：header（含配樂入口）、script 載入順�
 css/style.css           全部樣式；審美 tokens 在 :root
 vendor/jszip.min.js     JSZip 3.10.2（本地檔）＋ vendor/jszip-LICENSE.md
 js/mock-data.js         6 種類型的規則、示範分析、拍攝卡
-js/music-library.js     內建歌單 85 首（曲風、氛圍標籤、建議起始段落）
+js/music-library.js     內建歌單 85 首（曲風、氛圍標籤、建議起始段落、youtubeId、startSec）
 js/music.js             配樂偏好（localStorage）、照片氛圍計算、推薦計分
+js/preview.js           試聽：YouTube IFrame（按了才載入）＋ iTunes 備援，15 秒自動停
 js/ai.js                AI 接口（目前回傳示範結果）← 之後在這裡接 AI
 js/grid.js              色塊九宮格、示範主頁產生器、從截圖裁出既有貼文
 js/grid-detect.js       ★ 截圖格子區偵測（獨立模組，測試也呼叫它）
@@ -55,14 +60,40 @@ tools/lib.mjs           腳本共用：本機 server＋無頭 Chrome
 tools/make-fixtures.mjs 產生合成測試截圖與測試照片（全部是色塊）
 tools/test-grid-detect.mjs  格線偵測自動測試（PASS/FAIL）
 tools/screenshot.mjs    走完整個流程、截全部畫面、做功能檢查（含 zip 的 unzip -t）
-tools/fixtures/         測試圖；synth-expect.json 是合成截圖的真實格線座標
+tools/fixtures/         測試圖；synth-expect.json 是合成截圖的真實格線座標（含分頁列下緣、導覽列上緣）
+tools/music-lookup/     執行方查 YouTube ID 的腳本與結果；verified.json 是唯一的 youtubeId 來源
 screenshots/            截圖
 REVIEW.md               自我審查紀錄
 ```
 
 ## 格線偵測（`js/grid-detect.js`）
 
-全部在瀏覽器本地用 canvas 分析像素，不花 token，也不送網路。
+全部在瀏覽器本地用 canvas 分析像素，不花 token，也不送網路。第三輪起是**先分類、再偵測**。
+
+### 0. 讀圖（效能）
+
+- `GridDetect.decode(file, objectURL)`：先只解碼拿尺寸，再用 `createImageBitmap(file, { resizeWidth, resizeHeight })` 直接縮到**寬 1080**；不支援時退回 Image＋canvas。原圖只當預覽用的 object URL，主執行緒不處理全解析度像素（iOS Safari canvas 上限約 16.7M 像素）。
+- 偵測時畫一次、`getImageData` 一次取完像素；用完 `ImageBitmap.close()`、canvas 寬高設 0。
+- 讀取期間顯示「正在讀取主頁…」，按鈕停用；先 `requestAnimationFrame`＋`setTimeout(0)` 讓狀態畫出來再算。
+- HEIC 解不開時顯示：「請改用螢幕截圖（PNG），或到 iPhone『設定 › 相機 › 格式』改成『最相容』。」
+
+### A. 分類（`GridDetect.classify`）
+
+- 高÷寬 ≥ 1.7 → 手機；寬 > 高 → 電腦；1.25–1.7 → iPad；1–1.25 → 不確定。
+- 高÷寬 1.6–1.7 但同時有頂部狀態列（左時間、右電量）與底部導覽列（5 個等距小 icon）→ 也算手機。
+- 畫面顯示「偵測到：手機截圖」與「手機｜電腦」細框分段切換，切換後用快取的像素立刻重跑（`GridDetect.redetect`）。
+- 不確定：兩種都試、先用信心高的結果，同時問「這是手機還是電腦截圖？」。兩種都失敗 → 手動拖框。
+
+### B. 手機：IG App 版型定位（不做通用格線搜尋）
+
+1. **找分頁 icon 列**：由上往下找一條細橫帶，內有 3–4 個等距小 icon（中心約在 1/8、3/8、5/8、7/8 或 1/6、1/2、5/6），且只有一個 icon 下方有一條很深（深色模式是很亮）的短底線；底線下若有整條同色的 1px 分隔線也一併算進去。icon 高度用**寬度**當尺度（各機型、裁切過的截圖都適用），沒有寫死任何 y 位置。
+2. **貼文區 top** ＝ 分頁列（底線／分隔線）之下；頭像、簡介、按鈕、限動精選都在它上面，不可能被當成貼文。
+3. **左右貼齊全寬、三欄等寬**（格縫約 1–3px）。
+4. **比例**：在 3:4／4:5／1:1 預期的列縫位置找「差異突然變小」的縫，命中減未命中最高者勝；量不到（例如只有 1 篇、底下全白）就量第一篇的高度；再不行預設 3:4，畫面標「格子比例為推測」。
+5. **下緣**停在底部導覽列上緣（沒有導覽列就到圖底），框內每一排都列出，空的標「空格」。
+6. **找不到分頁列** → 不硬給框，交給手動拖框；初始框是保守猜測：全寬、圖高 45%～導覽列。
+
+### C. 電腦／iPad：通用格線偵測（第二輪的方法，原樣保留）
 
 1. **估背景色**：取截圖四邊的像素，量化後取眾數。淺色和深色模式都適用，`theme` 也由這一步判斷。
 2. **找出非背景的像素**：和背景色的最大通道差超過門檻（深色模式 6、淺色模式 8）就算。另外建一張積分圖，之後任何矩形都能 O(1) 求和。
@@ -91,7 +122,7 @@ REVIEW.md               自我審查紀錄
 mkdir -p /tmp/shot && cd /tmp/shot && npm init -y && npm i puppeteer-core
 cd /workspace/ig-layout-app
 node tools/make-fixtures.mjs        # 產生合成截圖（只需一次）
-node tools/test-grid-detect.mjs     # 6 張全部 PASS
+node tools/test-grid-detect.mjs     # 10 張全部 PASS（也檢查分類、iPhone 框不蓋頭像、左右貼齊、下緣停在導覽列）
 ```
 
 ## 配樂推薦
@@ -110,7 +141,29 @@ node tools/test-grid-detect.mjs     # 6 張全部 PASS
   - 不喜歡的歌直接排除；同歌手每首不喜歡的歌 −2.5。
   - 加一點固定雜訊；同一組裡不重複歌手。
   - 「換一組」會換雜訊種子，並避開剛推過的歌。
-- **歌單**（`js/music-library.js`）共 85 首，依知識整理，**沒有上網逐首核對**。起始段落只寫「前奏、主歌、副歌、橋段」，不寫秒數。
+- **歌單**（`js/music-library.js`）共 85 首，依知識整理。起始段落是「前奏、主歌、副歌、橋段」，另有 `startSec`（人工估計的秒數）。
+
+### 試聽（`js/preview.js`，第三輪）
+
+- **YouTube 為主**：只用 `tools/music-lookup/verified.json` 的 `youtubeId`（由執行方查詢驗證，原樣寫入，不可自行修改或補上；〈董小姐〉為 null）。Live／節目版標 `ytNote`。
+  - 第一次按試聽才動態載入 `https://www.youtube.com/iframe_api`。
+  - `playerVars: { start: startSec, end: startSec + 15, playsinline: 1, controls: 1, rel: 0, origin }`，另有計時器在 15 秒時停止。
+  - 播放器 320×180 細框，展開在該首歌卡片內；有細線進度、剩餘秒數、暫停／停止、「試聽 15 秒」與來源小字，並註明「起始秒數為人工判斷，可能不精準」。
+- **備援 iTunes**：youtubeId 為 null、iframe_api 載入失敗或 8 秒逾時、YouTube `onError`（2／5／100／101／150）→ `https://itunes.apple.com/search?term=<歌手 歌名>&entity=song&country=tw&limit=5`，歌名＋歌手正規化比對後取 `previewUrl`，用 `<audio>` 從 0 播 15 秒（標「Apple Music 30 秒試聽片段」）。都沒有 → 「請到 IG 搜尋這首歌」。查詢結果存在記憶體。
+- **同時只播一首**；切換別首、換頁、換一組、不喜歡、頁面隱藏（`visibilitychange`／`pagehide`）時立刻停止。
+- **設定頁「喜歡的歌」**：每首旁有試聽鍵，只查 iTunes（不做 YouTube 搜尋、不用 AI）。
+- 播放鍵是 44×44 細線圓形。
+
+## 第 5 步「暫時拿掉」（模擬封存，不會真的刪除）
+
+- 九宮格預覽裡每一張**既有貼文**右上有「拿掉」（點擊區 44×44）；分析頁標「建議封存」的那幾格會加小標「建議拿掉」。新照片仍用原本的 ×。
+- 拿掉後，其餘既有貼文依原始順序往前補位；底部跳出細框米白提示「已拿掉原第 n 格・復原」（5 秒）。
+- 預覽下方的「已拿掉」區：縮圖、「原第 n 格」、「恢復」（依原始索引排回原位，不是補到最後）、標題列的「全部還原」。
+- 一行小字：「這只是模擬封存的預覽，不會動到你的 IG，也不會刪除相簿裡的照片。」
+- **存在本機**：
+  - `localStorage['liuge.archived.v1'] = { v:1, src:'檔名|寬x高'（或 demo-placeholder）, removed:[原始索引…] }`，來源不同就不套用。
+  - `sessionStorage['liuge.shot.v1']`：分析用的縮小截圖（寬 ≤ 1080 的 JPEG dataURL）、分類切換與手動框。重新整理後自動還原截圖、重新偵測，第 5 步預覽仍是拿掉後的樣子；存不下時只保留已拿掉的索引。
+  - 新照片本身不保存（重新整理後要重新選）。
 
 ## zip 下載
 
@@ -139,8 +192,16 @@ node tools/screenshot.mjs             # 全部（約 2 分鐘）
 ONLY=bugfix node tools/screenshot.mjs # 只跑 bug 修正證明
 ```
 
-腳本會自己啟動 `127.0.0.1:8765`，結束時關閉。它會檢查以下項目：
+```bash
+ONLY=iphone,perf,archive,music node tools/screenshot.mjs   # 只跑第三輪新增的流程
+```
+
+腳本會自己啟動本機 server（以 `http://localhost:8765` 開，原因見上），結束時關閉。它會檢查以下項目：
 
 - page error、console error、失敗的請求、水平溢出
 - 輸出的 JPEG 尺寸、色溫有沒有真的改變像素
 - 封存標記、配樂偏好有沒有存進 localStorage、喜歡和不喜歡、zip
+- iPhone 截圖：分類、框在分頁列下、全寬、手動框初始位置、切換手機／電腦、不確定時的提問
+- 暫時拿掉：索引、toast 復原、恢復回原位、重新整理後保留、全部還原
+- 試聽：iTunes previewUrl 能否播放、YouTube 是否真的開始播、15 秒自動停、同時只播一首、換一組／換頁停止、兩種備援
+- 效能：1179×2556 與 1290×2796 從選檔到偵測完成的時間

@@ -483,7 +483,7 @@ input[type="range"]:hover::-webkit-slider-thumb { border-color: var(--accent); }
   font-size: 11px; letter-spacing: .14em; line-height: 1; padding: 4px 7px 3px; border-radius: var(--r); white-space: nowrap;
 }
 .gc { position: absolute; box-shadow: inset 0 0 0 .5px rgba(251, 249, 245, .75); }
-.gc.empty {
+.gc.gempty {
   background: repeating-linear-gradient(135deg, rgba(251,249,245,.16) 0 1px, transparent 1px 8px);
   box-shadow: inset 0 0 0 .5px rgba(251, 249, 245, .45);
 }
@@ -641,6 +641,129 @@ input[type="text"] { font: inherit; }
 .addsong { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; gap: 8px; margin-top: 12px; }
 .rec-h { font-size: 14px; color: var(--ink-2); margin: 16px 0 8px; letter-spacing: .06em; }
 .rec-empty { margin-top: 12px; }
+
+/* =========================================================
+   第三輪新增
+   ========================================================= */
+
+/* 「貼文區」標籤放框內右下：框正上方常是分頁圖示列，放外面會蓋住 icon；右上會撞到格子編號 */
+.gbox.tag-in .gbox-tag { bottom: 4px; right: 4px; }
+
+/* ---------- 讀取狀態：細線轉圈 ---------- */
+.spin {
+  width: 22px; height: 22px; border-radius: 50%; flex: none; display: inline-block;
+  border: 1px solid var(--line); border-top-color: var(--accent); animation: spin .9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.drop.is-loading { cursor: progress; gap: 14px; }
+.drop.is-loading .spin { width: 28px; height: 28px; }
+.link[disabled], .seg button[disabled], .pill[disabled], .is-busy { opacity: .5; pointer-events: none; }
+.ph-load {
+  display: flex; align-items: center; gap: 12px; padding: 12px 16px; margin-bottom: 20px;
+  border: 1px solid var(--line); background: var(--surface); font-size: 14px; color: var(--ink-2); letter-spacing: .04em;
+}
+.ph-load .spin { width: 18px; height: 18px; }
+
+/* ---------- 分類：偵測到哪一種截圖＋細框分段切換 ---------- */
+.kindbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 4px 0 14px; }
+.meta .kindbar { margin: 8px 0 2px; justify-content: flex-start; }
+.kb-l { font-size: 14px; color: var(--ink-2); letter-spacing: .04em; }
+.kb-l b { font-weight: 400; color: var(--ink); font-family: var(--serif); }
+.kb-sub { font-size: 12.5px; color: var(--ink-3); margin-left: 4px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--surface); }
+.seg button {
+  min-width: 56px; min-height: 36px; padding: 0 14px; border: 0; background: transparent; color: var(--ink-3);
+  font-size: 13.5px; letter-spacing: .12em; transition: background-color .2s ease, color .2s ease;
+}
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--ink); }
+.seg button:hover { color: var(--ink); }
+.notice.ask { align-items: flex-start; }
+.notice.ask p { margin-top: 4px; }
+.ask-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.ask-row .pill { height: 40px; padding: 0 18px; }
+.ratio-guess { color: var(--accent-ink); }
+
+/* ---------- 帶動作的提示（拿掉・復原）：細框米白、底部置中 ---------- */
+.toast.act {
+  width: max-content; max-width: calc(100% - 32px); white-space: nowrap;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--ink-3);
+  display: flex; align-items: center; gap: 16px; padding: 4px 8px 4px 20px; text-align: left;
+}
+.toast.act.show { pointer-events: auto; }
+.toast-btn {
+  min-height: 44px; padding: 0 12px; border: 0; background: none; color: var(--accent-ink); white-space: nowrap; flex: none;
+  font-size: 14px; letter-spacing: .12em; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 5px;
+}
+
+/* ---------- 第 5 步：暫時拿掉（模擬封存） ---------- */
+.pc-rm {
+  position: absolute; right: 0; top: 0; width: 44px; height: 44px; border: 0; padding: 0; background: none;
+  display: flex; align-items: flex-start; justify-content: flex-end;
+}
+.pc-rm span {
+  margin: 4px 4px 0 0; font-size: 11px; line-height: 1; padding: 4px 6px 3px; letter-spacing: .1em;
+  background: rgba(251, 249, 245, .92); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r);
+  transition: border-color .2s ease;
+}
+.pc-rm:hover span, .pc-rm:focus-visible span { border-color: var(--ink); }
+.pc-hint {
+  position: absolute; left: 4px; bottom: 4px; font-size: 10.5px; line-height: 1; padding: 4px 5px 3px; letter-spacing: .08em;
+  background: var(--ink); color: var(--surface); border-radius: var(--r); pointer-events: none;
+}
+.pgrid .pc.old .cell { position: absolute; inset: 0; }
+.archbox { margin-top: 16px; }
+.arch-note { display: flex; align-items: flex-start; }
+.arch-note .ic-inline { margin-top: 4px; flex: none; }
+.archd { margin-top: 16px; border-top: 1px solid var(--line); }
+.arch-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0 4px; }
+.arch-title { font-family: var(--label); font-size: 13px; letter-spacing: .15em; color: var(--ink-2); }
+.arch-head .link { min-height: 44px; }
+.arch-list { list-style: none; margin: 0; padding: 0; }
+.arch-list li { display: grid; grid-template-columns: 48px 1fr auto; gap: 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.arch-th { position: relative; width: 48px; aspect-ratio: 4 / 5; overflow: hidden; background: var(--bg-2); }
+.arch-th img { width: 100%; height: 100%; object-fit: cover; }
+.arch-th .cell { position: absolute; inset: 0; }
+.arch-pos { font-size: 14px; color: var(--ink-2); letter-spacing: .06em; }
+.arch-pos em { font-style: normal; font-size: 12px; color: var(--accent-ink); border: 1px solid var(--accent); padding: 1px 6px; margin-left: 8px; border-radius: var(--r); }
+.arch-list .btn-sm { min-height: 44px; }
+
+/* ---------- 第 5 步：試聽 ---------- */
+.song-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.song-pv { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: none; }
+.pv-hint { font-size: 11px; color: var(--ink-3); letter-spacing: .12em; }
+.pv-btn {
+  width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--ink-3); background: var(--surface); color: var(--ink);
+  display: grid; place-items: center; padding: 0; transition: border-color .2s ease, background-color .2s ease;
+}
+.pv-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linejoin: round; }
+.pv-btn:hover { border-color: var(--ink); }
+.pv-btn.on { border-color: var(--ink); background: var(--accent-soft); }
+.pv-slot { margin-top: 12px; }
+.pv-box { border: 1px solid var(--line); background: var(--surface); padding: 12px; }
+.pv-media:empty { display: none; }
+.pv-media { margin-bottom: 10px; max-width: 320px; }
+.pv-media iframe { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; min-width: 200px; min-height: 113px; border: 0; }
+.pv-ctrl { display: grid; grid-template-columns: 44px 1fr auto 44px; gap: 10px; align-items: center; }
+.pv-ctrl button {
+  width: 44px; height: 44px; border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: var(--r);
+  display: grid; place-items: center; padding: 0;
+}
+.pv-ctrl button:hover { border-color: var(--ink-3); }
+.pv-ctrl svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linejoin: round; }
+.pv-track { height: 1px; background: var(--line); position: relative; }
+.pv-bar { position: absolute; left: 0; top: -1px; height: 3px; width: 0; background: var(--accent); transition: width .2s linear; }
+.pv-left { font-family: var(--latin); font-size: 15px; color: var(--ink-2); min-width: 40px; text-align: right; }
+.pv-meta { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; font-size: 12.5px; color: var(--ink-3); letter-spacing: .08em; flex-wrap: wrap; }
+.pv-src { color: var(--ink-2); }
+.pv-note:empty { display: none; }
+.pv-note { margin-top: 4px; }
+.pv-none { padding: 10px 12px; border: 1px dashed var(--line); }
+.pv-foot { color: var(--ink-3); }
+.songlist li.has-pv { flex-wrap: wrap; }
+.songlist li.has-pv .pv-slot { flex-basis: 100%; margin-top: 4px; }
+.songlist li.has-pv .pv-slot[hidden] { display: none; }
+.sl-act { display: inline-flex; gap: 8px; align-items: center; }
 
 /* =========================================================
    Desktop

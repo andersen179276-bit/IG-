@@ -2,28 +2,34 @@
  * app.js — 路由與畫面
  * ------------------------------------------------------------
  * hash 路由：#/ → #/upload → #/style → #/analysis → #/next → #/photos，另有 #/music（配樂偏好）
- * 狀態只存在記憶體（重新整理即清空），照片與截圖都不離開裝置。
- * 配樂偏好是唯一會留下來的資料：存在這台裝置的 localStorage（見 js/music.js）。
+ * 照片與截圖都不離開裝置。會留在這台裝置上的資料：
+ *   localStorage['liuge.music.v1']     配樂偏好（見 js/music.js）
+ *   localStorage['liuge.archived.v1']  第 5 步「暫時拿掉」的貼文索引（原始位置＋來源截圖識別）
+ *   sessionStorage['liuge.shot.v1']    分析用的縮小截圖（寬 ≤ 1080 的 JPEG），重新整理後還原預覽；關掉分頁就清除
+ * 唯一的對外連線：第 5 步按「試聽」時才載入 YouTube 播放器，或用歌名＋歌手查 Apple 的公開試聽（js/preview.js）。
  */
 (function () {
   'use strict';
 
   var STYLES = window.MockData.STYLES;
-  var Grid = window.Grid, Editor = window.Editor, AI = window.AI, GD = window.GridDetect, Music = window.Music;
+  var Grid = window.Grid, Editor = window.Editor, AI = window.AI, GD = window.GridDetect, Music = window.Music, Preview = window.Preview;
 
   var ROUTES = ['', 'upload', 'style', 'analysis', 'next', 'photos'];
   var EXTRA = ['music'];
   var STEP_NAME = { upload: '上傳主頁', style: '選類型', analysis: '分析', next: '下一篇', photos: '整理照片' };
 
   var state = {
-    shot: null,          // { url, width, height, name, isDemo, det, grid }
+    shot: null,          // { url, width, height, name, isDemo, det, grid, srcId, chosen, ms }
     shotP: null,         // 讀取＋偵測中的 Promise
+    loading: null,       // 上傳後讀取中：{ text }
+    uploadError: null,   // 上傳失敗的溫和提示（例如 HEIC 解不開）
+    debugDelay: 0,       // 截圖腳本用：人為延遲偵測，才拍得到讀取狀態
     frameEdit: null,     // 手動拖框中：{ x, y, w, h, ratio }（原圖像素）
     styleId: null,
     analysis: null, analysisKey: null,
     shots: null, shotsKey: null, shotIndex: 0,
     photos: [], cur: null,
-    existing: null, existingKey: null,
+    existing: null, existingKey: null, existingHints: [],
     music: { seed: 0, avoid: [], recs: null, returnTo: null, tab: 'genre', draft: null, taste: null }
   };
 
@@ -43,13 +49,29 @@
   function pct(v, total) { return (v / total * 100).toFixed(3) + '%'; }
 
   var toastTimer;
-  function toast(msg) {
+  /* toast(msg) 一般提示；toast(msg, { label, fn }) 帶一個動作（例如「復原」），預設停 5 秒 */
+  function toast(msg, action, ms) {
     var t = document.getElementById('toast');
-    t.textContent = msg;
+    t.innerHTML = '';
+    var sp = document.createElement('span'); sp.textContent = msg; t.appendChild(sp);
+    t.classList.toggle('act', !!action);
+    if (action) {
+      var b = document.createElement('button');
+      b.type = 'button'; b.className = 'toast-btn'; b.textContent = action.label;
+      b.addEventListener('click', function () { t.classList.remove('show'); clearTimeout(toastTimer); action.fn(); });
+      t.appendChild(b);
+    }
     t.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2200);
+    toastTimer = setTimeout(function () { t.classList.remove('show'); }, ms || (action ? 5000 : 2200));
   }
+  function nextFrame() {
+    // 先讓瀏覽器把「讀取中」畫出來，再開始算（避免畫面凍結）
+    return new Promise(function (r) { requestAnimationFrame(function () { setTimeout(r, 0); }); });
+  }
+  function wait(ms) { return new Promise(function (r) { setTimeout(r, ms || 0); }); }
+  function isHeic(f) { return /hei[cf]/i.test(f.type || '') || /\.hei[cf]$/i.test(f.name || ''); }
+  var HEIC_MSG = '這張是 HEIC 格式，這個瀏覽器讀不出來。請改用螢幕截圖（PNG），或到 iPhone「設定 › 相機 › 格式」改成「最相容」。';
 
   /* ---------- 細線圖示（stroke 1.25） ---------- */
   var I = {
@@ -111,6 +133,7 @@
     // 需要前置條件的步驟：沒選類型就回到選類型
     if ((route === 'analysis' || route === 'next') && !state.styleId) { go('style'); return; }
     updateHeader(route);
+    if (Preview) Preview.stop(); // 換頁立刻停止試聽
     cleanupPhotos();
     var view = VIEWS[route] || VIEWS[''];
     $main.innerHTML = '';
@@ -173,7 +196,7 @@
         '<div class="stg">' +
           '<span class="eyebrow">步驟 01 — 你的主頁</span>' +
           '<h1 class="h1">先讓我看看<br>你現在的主頁。</h1>' +
-          '<p class="lead">在 Instagram 打開自己的主頁，往下滑到看得見九宮格，截一張圖就好。手機、電腦、iPad 的截圖都可以，深色模式也行。</p>' +
+          '<p class="lead">在 Instagram 打開自己的主頁，往下滑到看得見九宮格，截一張圖就好。建議上傳 IG App 主頁截圖；電腦版截圖也可以。深色模式也行。</p>' +
           '<ol class="reads">' +
             '<li><span class="n">01</span><span>色調：最近幾格是不是同一個色系</span></li>' +
             '<li><span class="n">02</span><span>留白：畫面有沒有喘息的空間</span></li>' +
@@ -186,18 +209,74 @@
     renderUploadArea();
   }
 
+  var KIND_LABEL = { phone: '手機截圖', desktop: '電腦截圖', ipad: 'iPad 截圖', uncertain: '還不確定是手機或電腦' };
+
   function detLine(s) {
     if (!s || !s.grid) return '';
     var g = s.grid;
-    if (g.ok) return '<span class="det-ok">' + I.scan + '找到貼文區：' + g.posts + ' 篇貼文 · ' + g.cols + ' 欄 · 格子 ' + g.ratio + '</span>';
+    if (g.ok) return '<span class="det-ok">' + I.scan + '找到貼文區：' + g.posts + ' 篇貼文 · ' + g.cols + ' 欄 · 格子 ' + g.ratio + (g.ratioGuessed ? '（推測）' : '') + '</span>';
+    if (g.kind === 'phone' && !g.tabRow) return '<span class="det-warn">' + I.frame + '沒找到 IG 的分頁圖示列，分析時請手動框選貼文區</span>';
     return '<span class="det-warn">' + I.frame + '沒找到明確的貼文格子，分析時可以手動框選</span>';
+  }
+
+  /* 「偵測到：手機截圖」＋細框分段切換（手機｜電腦），切換後立刻用另一種偵測重跑 */
+  function kindBarHTML(sh) {
+    var d = sh && sh.det;
+    if (!d || !d.cls) return '';
+    var used = d.kind;
+    var extra = d.cls.kind === 'ipad' ? '<span class="kb-sub">（用電腦版的偵測）</span>'
+      : sh.chosen && sh.chosen !== (d.cls.kind === 'uncertain' ? null : d.cls.kind) ? '<span class="kb-sub">（你改成用' + (used === 'phone' ? '手機' : '電腦') + '版偵測）</span>' : '';
+    return '<div class="kindbar">' +
+      '<span class="kb-l">偵測到：<b>' + KIND_LABEL[d.cls.kind] + '</b>' + extra + '</span>' +
+      '<span class="seg" role="group" aria-label="用哪一種截圖的方式偵測">' +
+        '<button type="button" data-kind="phone" aria-pressed="' + (used === 'phone') + '">手機</button>' +
+        '<button type="button" data-kind="desktop" aria-pressed="' + (used === 'desktop') + '">電腦</button>' +
+      '</span></div>';
+  }
+  function askKindHTML(sh) {
+    var d = sh && sh.det;
+    if (!d || !d.cls || d.cls.kind !== 'uncertain' || sh.chosen) return '';
+    return '<div class="notice ask" role="group" aria-label="選擇截圖類型">' + I.scan +
+      '<div><b>這是手機還是電腦截圖？</b><p>這張圖的比例介於兩者之間（高÷寬 ' + d.cls.ar + '）。我先用比較有把握的方式找了一次，選一下會更準。</p>' +
+      '<div class="ask-row"><button type="button" class="pill" data-kind="phone">手機截圖</button><button type="button" class="pill" data-kind="desktop">電腦截圖</button></div></div></div>';
+  }
+  function bindKind(root, after) {
+    qsa('[data-kind]', root).forEach(function (b) {
+      b.addEventListener('click', function () {
+        var k = b.getAttribute('data-kind');
+        if (!state.shot) return;
+        b.disabled = true;
+        nextFrame().then(function () { switchKind(k); after(); });
+      });
+    });
+  }
+  function switchKind(kind) {
+    var sh = state.shot;
+    sh.det = GD.redetect(sh.det, kind);
+    sh.grid = sh.det;
+    sh.chosen = kind;
+    state.frameEdit = null; state.existing = null;
+    updateShotSession({ kind: kind, frame: null });
+    toast((kind === 'phone' ? '改用手機版型定位' : '改用電腦版偵測') + '：' + (sh.grid.ok ? '找到 ' + sh.grid.posts + ' 篇貼文' : '沒找到，請手動框選'));
   }
 
   function renderUploadArea() {
     var area = document.getElementById('upArea');
     if (!area) return;
-    if (!state.shot) {
+    var err = state.uploadError ? '<div class="notice" role="alert">' + I.frame + '<p>' + esc(state.uploadError) + '</p></div>' : '';
+    if (state.loading) {
       area.innerHTML =
+        '<div class="drop is-loading" aria-busy="true" role="status">' +
+          '<span class="spin" aria-hidden="true"></span>' +
+          '<span class="d-title">' + esc(state.loading.text) + '</span>' +
+          '<span class="d-sub">在你的裝置上縮圖、判斷截圖類型、找出貼文區</span>' +
+        '</div>' +
+        '<p class="privacy">' + I.device + '照片只在你的裝置上處理，不會上傳。</p>' +
+        '<div class="actions mt-24"><button class="link muted" type="button" disabled>沒有截圖？先用示範截圖</button></div>';
+      return;
+    }
+    if (!state.shot) {
+      area.innerHTML = err +
         '<label class="drop" id="drop" tabindex="0">' +
           I.upload +
           '<span class="d-title">把主頁截圖拖到這裡</span>' +
@@ -216,13 +295,14 @@
       document.getElementById('useDemo').addEventListener('click', useDemoShot);
     } else {
       var s = state.shot;
-      area.innerHTML =
+      area.innerHTML = err +
         '<div class="preview">' +
           '<div class="shot"><img src="' + s.url + '" alt="你的主頁截圖預覽"></div>' +
           '<div class="meta">' +
             '<span class="ok">' + I.check + (s.isDemo ? '已載入示範截圖' : '已讀取截圖') + '</span>' +
             '<span class="fname">' + esc(s.name) + '</span>' +
             '<span class="small">' + s.width + ' × ' + s.height + ' px' + (s.isDemo ? ' · 抽象色塊示意' : '') + '</span>' +
+            kindBarHTML(s) +
             '<span class="det small">' + detLine(s) + '</span>' +
             '<div class="row">' +
               '<label class="link muted" tabindex="0" id="replaceLbl">更換<input type="file" id="shotInput" accept="image/*" hidden></label>' +
@@ -230,18 +310,21 @@
             '</div>' +
           '</div>' +
         '</div>' +
+        askKindHTML(s) +
         '<p class="privacy">' + I.device + '照片只在你的裝置上處理，不會上傳。</p>' +
         '<div class="actions mt-32"><button class="btn btn-block" type="button" id="toStyle">下一步：選類型 ' + I.arrow + '</button></div>';
       var inp = document.getElementById('shotInput');
       inp.addEventListener('change', function () { if (inp.files[0]) readShot(inp.files[0]); });
       document.getElementById('replaceLbl').addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inp.click(); } });
       document.getElementById('removeShot').addEventListener('click', function () {
-        if (state.shot && !state.shot.isDemo) URL.revokeObjectURL(state.shot.url);
+        if (state.shot && !state.shot.isDemo && /^blob:/.test(state.shot.url)) URL.revokeObjectURL(state.shot.url);
         state.shot = null; state.shotP = null; state.analysisKey = null; state.existing = null; state.frameEdit = null;
+        clearShotSession();
         renderUploadArea(); toast('已移除截圖');
       });
       document.getElementById('toStyle').addEventListener('click', function () { go('style'); });
       bindDrop(qs('.preview', area), function (files) { if (files[0]) readShot(files[0]); });
+      bindKind(area, renderUploadArea);
     }
   }
 
@@ -253,46 +336,122 @@
       el.addEventListener(t, function (e) { e.preventDefault(); el.classList.remove('over'); });
     });
     el.addEventListener('drop', function (e) {
-      var files = Array.prototype.filter.call(e.dataTransfer.files || [], function (f) { return /^image\//.test(f.type); });
+      var files = Array.prototype.filter.call(e.dataTransfer.files || [], function (f) { return /^image\//.test(f.type) || isHeic(f); });
       if (files.length) onFiles(files); else toast('請放入圖片檔');
     });
   }
 
-  /* 讀圖＋在本地偵測貼文格子區（GridDetect，像素分析、不送網路） */
-  function loadShot(url, name, isDemo) {
-    return new Promise(function (resolve, reject) {
-      var img = new Image();
-      img.onload = function () {
-        var det = GD.detect(img);
-        resolve({ url: url, width: img.naturalWidth, height: img.naturalHeight, name: name, isDemo: isDemo, det: det, grid: det });
-      };
-      img.onerror = reject;
-      img.src = url;
+  /* ---------- 讀圖＋分類＋偵測（全部在本地，不送網路） ----------
+   * 1. 先讓「正在讀取主頁…」畫出來（rAF＋setTimeout 0）
+   * 2. GridDetect.decode：只解碼取尺寸，再用 createImageBitmap 縮到寬 1080（原圖只拿來當預覽的 object URL）
+   * 3. GridDetect.detect：getImageData 一次取像素 → 分類 → 手機版型定位／電腦版偵測
+   * 4. 把縮小後的截圖存成 JPEG 放進 sessionStorage（重新整理後還原第 5 步預覽；存不下就算了）
+   * 5. 釋放 ImageBitmap／canvas */
+  function analyzeShot(o) {
+    state.loading = { text: o.loadingText || '正在讀取主頁…' };
+    state.uploadError = null;
+    if (currentRoute() === 'upload') renderUploadArea();
+    var t0 = performance.now(), t1;
+    return nextFrame().then(function () {
+      return GD.decode(o.blob, o.url);
+    }).then(function (d) {
+      t1 = performance.now();
+      return wait(state.debugDelay).then(function () {
+        var t2 = performance.now();
+        var det = GD.detect(d.src, { full: { w: d.w, h: d.h } });
+        if (o.kind && o.kind !== det.kind) det = GD.redetect(det, o.kind);
+        var t3 = performance.now();
+        var snap = o.persist === false ? null : snapshot(d.src);
+        GD.release(d.src);
+        var shot = {
+          url: o.url, width: d.w, height: d.h, name: o.name, isDemo: !!o.isDemo, det: det, grid: det,
+          srcId: o.srcId || (o.isDemo ? 'demo' : o.name + '|' + d.w + 'x' + d.h), chosen: o.kind || null,
+          ms: { decode: Math.round(t1 - t0), detect: Math.round(t3 - t2), total: Math.round(t3 - t0 - (t2 - t1)), how: d.how }
+        };
+        if (o.frame) {
+          var F = o.frame;
+          shot.grid = GD.fromFrame(det, { x: F.x * d.w, y: F.y * d.h, w: F.w * d.w, h: F.h * d.h }, F.ratio);
+        }
+        if (snap) saveShotSession(shot, snap);
+        return shot;
+      });
+    }).then(function (sh) {
+      state.loading = null; return sh;
+    }, function (e) {
+      state.loading = null; throw e;
     });
   }
+  // 分析用縮圖（寬 ≤ 1080）→ JPEG dataURL
+  function snapshot(src) {
+    try {
+      var w = src.naturalWidth || src.width, h = src.naturalHeight || src.height;
+      var cv = document.createElement('canvas');
+      cv.width = w; cv.height = h;
+      cv.getContext('2d').drawImage(src, 0, 0);
+      var url = cv.toDataURL('image/jpeg', 0.8);
+      cv.width = 0; cv.height = 0;
+      return { url: url, w: w, h: h };
+    } catch (e) { return null; }
+  }
+
+  /* ---------- sessionStorage：重新整理後還原截圖（存不下時溫和降級：只保留已拿掉的索引） ---------- */
+  var SHOT_KEY = 'liuge.shot.v1';
+  function saveShotSession(shot, snap) {
+    try {
+      sessionStorage.setItem(SHOT_KEY, JSON.stringify({ v: 1, name: shot.name, isDemo: shot.isDemo, srcId: shot.srcId, url: snap.url, kind: shot.chosen, frame: null }));
+    } catch (e) { try { sessionStorage.removeItem(SHOT_KEY); } catch (e2) {} }
+  }
+  function loadShotSession() {
+    try { var o = JSON.parse(sessionStorage.getItem(SHOT_KEY) || 'null'); return o && o.v === 1 && o.url ? o : null; } catch (e) { return null; }
+  }
+  function updateShotSession(patch) {
+    var o = loadShotSession(); if (!o) return;
+    Object.keys(patch).forEach(function (k) { o[k] = patch[k]; });
+    try { sessionStorage.setItem(SHOT_KEY, JSON.stringify(o)); } catch (e) {}
+  }
+  function clearShotSession() { try { sessionStorage.removeItem(SHOT_KEY); } catch (e) {} }
+  function restoreShot() {
+    var o = loadShotSession();
+    if (!o || state.shot || state.shotP) return;
+    setShot(analyzeShot({ blob: null, url: o.url, name: o.name, isDemo: o.isDemo, srcId: o.srcId, kind: o.kind, frame: o.frame, persist: false, loadingText: '正在還原剛才的截圖…' }))
+      .then(function () {
+        var r = currentRoute();
+        if (r === 'upload') renderUploadArea();
+        if (r === 'photos') { prepareExisting(); drawGridPreview(); }
+      }, function () { clearShotSession(); state.shotP = null; if (currentRoute() === 'upload') renderUploadArea(); });
+  }
+
   function setShot(p) {
     state.shotP = p;
     state.analysisKey = null; state.existing = null; state.frameEdit = null;
     return p.then(function (s) {
       if (state.shotP !== p) return s;
-      if (state.shot && !state.shot.isDemo && state.shot.url !== s.url) URL.revokeObjectURL(state.shot.url);
+      if (state.shot && !state.shot.isDemo && state.shot.url !== s.url && /^blob:/.test(state.shot.url)) URL.revokeObjectURL(state.shot.url);
       state.shot = s;
       return s;
     });
   }
 
   function readShot(file) {
-    if (!/^image\//.test(file.type)) { toast('請選擇圖片檔'); return; }
-    // object URL：只在本機記憶體裡，不送出網路
+    var heic = isHeic(file);
+    if (!/^image\//.test(file.type) && !heic) { toast('請選擇圖片檔'); return; }
+    if (state.loading) return;
+    // object URL：只在本機記憶體裡，不送出網路；原圖只拿來預覽
     var url = URL.createObjectURL(file);
-    setShot(loadShot(url, file.name, false)).then(function () {
+    setShot(analyzeShot({ blob: file, url: url, name: file.name, isDemo: false })).then(function () {
       renderUploadArea();
-    }, function () { URL.revokeObjectURL(url); toast('這張圖讀不出來，換一張試試'); });
+    }, function () {
+      URL.revokeObjectURL(url);
+      state.shotP = null;
+      state.uploadError = heic ? HEIC_MSG : '這張圖讀不出來，換一張試試（PNG、JPG 最穩）。';
+      renderUploadArea();
+      toast(heic ? '這張 HEIC 讀不出來' : '這張圖讀不出來，換一張試試');
+    });
   }
 
   function demoShotP() {
     var d = Grid.makeDemoScreenshot();
-    return loadShot(d.url, '示範主頁.png', true);
+    return analyzeShot({ blob: null, url: d.url, name: '示範主頁.png', isDemo: true });
   }
   function useDemoShot() {
     setShot(demoShotP()).then(renderUploadArea);
@@ -439,6 +598,9 @@
   /* ---------- 截圖面板：偵測框、格線、封存標記、手動拖框 ---------- */
   function guessFrame(sh) {
     var g = sh.grid;
+    // 偵測結果附的初始框：手機＝分頁列之下、全寬到導覽列；找不到分頁列＝全寬、圖高 45%～導覽列（保守猜測）
+    var mf = g && g.manualFrame;
+    if (mf && mf.w > 0 && mf.h > 0) return { x: mf.x, y: mf.y, w: mf.w, h: mf.h };
     if (g && g.box && g.box.w > 0) return { x: g.box.x, y: g.box.y, w: g.box.w, h: Math.max(g.box.h, g.cellH * 0.6) };
     var W = sh.width, H = sh.height;
     var h = Math.min(H * 0.5, W * 1.2);
@@ -465,21 +627,25 @@
       '</div>';
     } else if (g && g.box) {
       var bx = g.box, bBot = bx.y + bx.h;
-      layer += '<div class="gbox" style="left:' + pct(bx.x, W) + ';top:' + pct(bx.y, H) + ';width:' + pct(bx.w, W) + ';height:' + pct(bx.h, H) + '"><span class="gbox-tag">貼文區</span></div>';
+      layer += '<div class="gbox tag-in" style="left:' + pct(bx.x, W) + ';top:' + pct(bx.y, H) + ';width:' + pct(bx.w, W) + ';height:' + pct(bx.h, H) + '"><span class="gbox-tag">貼文區</span></div>';
       g.cells.forEach(function (c) {
         var top = Math.max(c.y, bx.y), bot = Math.min(c.y + c.h, bBot);
         if (bot - top < 2) return;
         var n = archBy[c.i];
-        var cls = n ? 'gc arch' : c.hasPost ? 'gc post' : 'gc empty';
+        var cls = n ? 'gc arch' : c.hasPost ? 'gc post' : 'gc gempty'; // 不用 .empty：會吃到第 5 步空狀態的虛線框與 padding
         var chip = n ? '<span class="mk"><b>' + pad2(n) + '</b>建議封存</span>'
           : c.hasPost ? '<span class="gn">' + pad2(c.postNo) + '</span>' : '<span class="ge">空格</span>';
         layer += '<div class="' + cls + '" style="left:' + pct(c.x, W) + ';top:' + pct(top, H) + ';width:' + pct(c.w, W) + ';height:' + pct(bot - top, H) + '">' + chip + '</div>';
       });
     }
 
-    var head = '';
+    var head = kindBarHTML(sh) + askKindHTML(sh);
     if (!auto) {
-      head = '<div class="notice" role="status">' + I.frame + '<p><b>我不太確定你的貼文從哪裡開始。</b>請拖一個框，框住你的貼文；框裡會即時畫出 3 欄格線。</p></div>';
+      if (g && g.kind === 'phone' && !g.tabRow) {
+        head += '<div class="notice" role="status">' + I.frame + '<p><b>我找不到 IG 主頁的分頁圖示列（九宮格、Reels、標記那一排）。</b>先放了一個保守的框：全寬、從畫面中段到底部導覽列。請把框的上緣拖到第一排貼文的上緣；框裡會即時畫出 3 欄格線。如果這其實是電腦截圖，按上面的「電腦」。</p></div>';
+      } else {
+        head += '<div class="notice" role="status">' + I.frame + '<p><b>我不太確定你的貼文從哪裡開始。</b>請拖一個框，框住你的貼文；框裡會即時畫出 3 欄格線。</p></div>';
+      }
     }
 
     var controls = '';
@@ -502,7 +668,10 @@
           '<p class="det-line">' + I.scan + '<span>' + (g.mode === 'manual' ? '依你拉的框：' : '找到貼文區：') + '<b>' + g.posts + '</b> 篇貼文 · ' + g.cols + ' 欄 · 格子 ' + g.ratio + (sh.det ? ' · ' + (sh.det.theme === 'dark' ? '深色模式' : '淺色模式') : '') + '</span></p>' +
           '<button class="link muted manual-btn" type="button" id="manualBtn">' + I.frame + '手動調整</button>' +
         '</div>' +
-        '<p class="small mt-8">' + (g.mode === 'manual' ? '格線依你拉的框重新計算。' : '在你的裝置上用像素分析找出貼文區，跳過頭像、簡介、精選動態與分頁圖示。') + '只有真的有貼文的格子會被編號，空格永遠不會被標記。</p>';
+        '<p class="small mt-8">' + (g.mode === 'manual' ? '格線依你拉的框重新計算。'
+          : g.kind === 'phone' ? '依 IG App 的版面定位：先找到九宮格／Reels／標記那一排分頁圖示，貼文區從它下面開始、左右貼齊、等寬 3 欄，停在底部導覽列之前；頭像、簡介、按鈕、限動精選都在分頁列上面，不會被標記。'
+          : '在你的裝置上用像素分析找出貼文區，跳過頭像、簡介、精選動態與分頁圖示。') + '只有真的有貼文的格子會被編號，空格永遠不會被標記。</p>' +
+        (g.ratioGuessed && g.mode !== 'manual' ? '<p class="small mt-8 ratio-guess">格子比例為推測（' + g.ratio + '）：貼文太少、量不到列縫。如果格線對不上，按「手動調整」換比例。</p>' : '');
     }
 
     var archHTML = '';
@@ -532,6 +701,7 @@
       archHTML;
 
     if (ed) bindFrame();
+    bindKind(box, function () { renderShotPanel(); });
     var mb = document.getElementById('manualBtn');
     if (mb) mb.addEventListener('click', function () {
       state.frameEdit = Object.assign(guessFrame(sh), { ratio: g.ratio });
@@ -609,13 +779,15 @@
       var f = state.frameEdit;
       state.shot.grid = GD.fromFrame(state.shot.det, { x: f.x, y: f.y, w: f.w, h: f.h }, f.ratio);
       state.frameEdit = null; state.existing = null;
+      var sw = state.shot.width, shh = state.shot.height;
+      updateShotSession({ frame: { x: f.x / sw, y: f.y / shh, w: f.w / sw, h: f.h / shh, ratio: f.ratio } });
       renderShotPanel();
       toast('已套用：框內有 ' + state.shot.grid.posts + ' 篇貼文');
     });
     var cancel = document.getElementById('mfCancel');
     if (cancel) cancel.addEventListener('click', function () { state.frameEdit = null; renderShotPanel(); });
     var back = document.getElementById('mfAuto');
-    if (back) back.addEventListener('click', function () { state.shot.grid = state.shot.det; state.frameEdit = null; state.existing = null; renderShotPanel(); });
+    if (back) back.addEventListener('click', function () { state.shot.grid = state.shot.det; state.frameEdit = null; state.existing = null; updateShotSession({ frame: null }); renderShotPanel(); });
   }
 
   /* =========================================================
@@ -752,18 +924,44 @@
     onWin('resize', function () { if (ph.stageCv) sizeStage(); });
   }
 
+  /* 多張照片：逐張讀（每張之間讓畫面喘口氣），顯示「正在讀取第 n／N 張…」 */
   function addFiles(fileList) {
-    var files = Array.prototype.filter.call(fileList || [], function (f) { return /^image\//.test(f.type); });
+    var files = Array.prototype.filter.call(fileList || [], function (f) { return /^image\//.test(f.type) || isHeic(f); });
     if (!files.length) { toast('請選擇圖片檔'); return; }
-    Promise.all(files.map(function (f) { return Editor.loadFile(f).catch(function () { return null; }); }))
-      .then(function (list) {
-        list = list.filter(Boolean);
-        list.forEach(function (p) { makeThumb(p); state.photos.push(p); });
-        if (!state.cur && list[0]) state.cur = list[0].id;
-        state.music.recs = null;
-        drawPhotos();
-        toast('已加入 ' + list.length + ' 張照片');
-      });
+    if (ph.loading) { toast('上一批還在讀取中'); return; }
+    ph.loading = true;
+    var N = files.length, added = [], heicFail = 0, fail = 0, i = 0;
+    function next() {
+      if (i >= N) return done();
+      phLoading(i + 1, N);
+      nextFrame().then(function () { return Editor.loadFile(files[i]); }).then(function (p) {
+        makeThumb(p); state.photos.push(p); added.push(p);
+      }, function (e) { if (e && e.code === 'heic') heicFail++; else fail++; }).then(function () { i++; next(); });
+    }
+    function done() {
+      ph.loading = false;
+      phLoading(0, 0);
+      if (!state.cur && added[0]) state.cur = added[0].id;
+      if (added.length) state.music.recs = null;
+      if (currentRoute() === 'photos') drawPhotos();
+      if (heicFail) toast(HEIC_MSG, null, 6000);
+      else if (fail) toast('有 ' + fail + ' 張讀不出來，已加入 ' + added.length + ' 張');
+      else toast('已加入 ' + added.length + ' 張照片');
+    }
+    next();
+  }
+  function phLoading(n, N) {
+    var body = document.getElementById('phBody');
+    var el = document.getElementById('phLoad');
+    if (!n) { if (el) el.remove(); qsa('#addMore, #phEmpty', $main).forEach(function (b) { b.removeAttribute('aria-disabled'); b.classList.remove('is-busy'); }); return; }
+    if (!body) return;
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'phLoad'; el.className = 'ph-load'; el.setAttribute('role', 'status');
+      body.insertBefore(el, body.firstChild);
+    }
+    el.innerHTML = '<span class="spin" aria-hidden="true"></span><span>正在讀取第 ' + n + '／' + N + ' 張…</span>';
+    qsa('#addMore, #phEmpty', $main).forEach(function (b) { b.setAttribute('aria-disabled', 'true'); b.classList.add('is-busy'); });
   }
 
   function makeThumb(p) {
@@ -774,16 +972,94 @@
   // 既有貼文：有主頁截圖就從偵測到的貼文格裁，沒有就用抽象色塊
   function prepareExisting() {
     var sh = state.shot;
-    if (!sh || !sh.grid || !sh.grid.posts) { state.existing = null; return; }
-    var g = sh.grid, key = sh.url + '|' + g.mode + '|' + (g.box ? [g.box.x, g.box.y, g.box.w].map(Math.round).join(',') : '');
+    if (!sh && state.shotP) { // 重新整理後截圖還在還原中
+      state.shotP.then(function () { if (currentRoute() === 'photos') { prepareExisting(); drawGridPreview(); } }, function () {});
+      return;
+    }
+    if (!sh || !sh.grid || !sh.grid.posts) { state.existing = null; state.existingHints = []; return; }
+    var g = sh.grid, key = sh.url + '|' + g.mode + '|' + g.kind + '|' + (g.box ? [g.box.x, g.box.y, g.box.w].map(Math.round).join(',') : '');
     if (state.existing && state.existingKey === key) return;
+    // 分析頁標「建議封存」的格子 → 第 5 步加小標「建議拿掉」
+    var archSet = {};
+    if (g.ok && g.mode !== 'manual') GD.pickArchive(g).forEach(function (x) { archSet[x.cell.i] = 1; });
+    var cells = g.cells.filter(function (c) { return c.hasPost && c.visible >= 0.6; }).slice(0, 12);
     var img = new Image();
     img.onload = function () {
       state.existing = Grid.cropExistingCells(img, g, 12);
+      state.existingHints = cells.map(function (c) { return !!archSet[c.i]; });
       state.existingKey = key;
       if (currentRoute() === 'photos') drawGridPreview();
     };
     img.src = sh.url;
+  }
+
+  /* ---------- 第 5 步：既有貼文「暫時拿掉」（模擬封存，絕不真的刪除） ----------
+   * localStorage['liuge.archived.v1'] = { v:1, src:'來源截圖識別（檔名|寬x高）', removed:[原始索引…], updatedAt }
+   * 原始索引 k ＝ 這張貼文在主頁上的順序（0 起算，畫面顯示「原第 k+1 格」）。恢復時依 k 排回原位，不是補到最後。 */
+  var ARCH_KEY = 'liuge.archived.v1';
+  function existingItems() {
+    if (state.existing && state.existing.length) {
+      return state.existing.map(function (u, k) { return { k: k, url: u, hint: !!state.existingHints[k] }; });
+    }
+    if (state.shot && state.shot.grid && state.shot.grid.posts) return []; // 還在裁切
+    if (!state.shot && state.shotP) return [];
+    return Grid.DEMO_PROFILE.map(function (c, k) { return { k: k, cell: c, hint: false }; });
+  }
+  function archSource() {
+    var sh = state.shot;
+    return sh && sh.grid && sh.grid.posts ? sh.srcId : 'demo-placeholder';
+  }
+  function archLoad() {
+    try { var o = JSON.parse(localStorage.getItem(ARCH_KEY) || 'null'); return o && o.v === 1 && Array.isArray(o.removed) ? o : null; } catch (e) { return null; }
+  }
+  function archRemoved() {
+    var o = archLoad();
+    return o && o.src === archSource() ? o.removed.filter(function (k) { return typeof k === 'number'; }) : [];
+  }
+  function archSave(removed) {
+    try { localStorage.setItem(ARCH_KEY, JSON.stringify({ v: 1, src: archSource(), removed: removed, updatedAt: new Date().toISOString() })); } catch (e) { /* 無痕模式存不了：畫面照常 */ }
+  }
+  function archiveOld(k) {
+    var r = archRemoved();
+    if (r.indexOf(k) >= 0) return;
+    r.push(k); archSave(r);
+    drawGridPreview();
+    toast('已拿掉原第 ' + (k + 1) + ' 格', { label: '復原', fn: function () { restoreOld(k, true); } });
+  }
+  function restoreOld(k, quiet) {
+    archSave(archRemoved().filter(function (x) { return x !== k; }));
+    drawGridPreview();
+    if (!quiet) toast('原第 ' + (k + 1) + ' 格回到原位');
+  }
+  function restoreAll() {
+    archSave([]);
+    drawGridPreview();
+    toast('已全部還原');
+  }
+  function oldThumbHTML(it) {
+    return it.url ? '<img alt="" src="' + it.url + '">' : Grid.cellHTML(it.cell);
+  }
+  function drawArchived() {
+    var box = document.getElementById('archBox');
+    if (!box) return;
+    var items = existingItems(), removed = archRemoved().slice().sort(function (a, b) { return a - b; });
+    var byK = {}; items.forEach(function (it) { byK[it.k] = it; });
+    removed = removed.filter(function (k) { return byK[k]; });
+    var html = items.length ? '<p class="small arch-note">' + I.lock.replace('<svg', '<svg class="ic-inline"') + '這只是模擬封存的預覽，不會動到你的 IG，也不會刪除相簿裡的照片。</p>' : '';
+    if (removed.length) {
+      html += '<div class="archd">' +
+        '<div class="arch-head"><span class="arch-title">已拿掉（' + removed.length + '）</span><button class="link muted" type="button" id="archAll">全部還原</button></div>' +
+        '<ul class="arch-list">' + removed.map(function (k) {
+          return '<li><span class="arch-th">' + oldThumbHTML(byK[k]) + '</span><span class="arch-pos">原第 ' + (k + 1) + ' 格' + (byK[k].hint ? '<em>建議拿掉</em>' : '') + '</span>' +
+            '<button class="btn btn-ghost btn-sm" type="button" data-restore="' + k + '">恢復</button></li>';
+        }).join('') + '</ul></div>';
+    }
+    box.innerHTML = html;
+    qsa('[data-restore]', box).forEach(function (b) {
+      b.addEventListener('click', function () { restoreOld(Number(b.getAttribute('data-restore'))); });
+    });
+    var all = document.getElementById('archAll');
+    if (all) all.addEventListener('click', restoreAll);
   }
 
   function drawPhotos() {
@@ -802,7 +1078,7 @@
         '</div>' +
         '<div class="gp">' + gridPreviewShell() + '</div></div>';
       var em = document.getElementById('phEmpty');
-      em.addEventListener('click', function () { document.getElementById('phInput').click(); });
+      em.addEventListener('click', function () { if (!ph.loading) document.getElementById('phInput').click(); });
       em.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); document.getElementById('phInput').click(); } });
       bindDrop(em, addFiles);
       drawGridPreview();
@@ -916,13 +1192,14 @@
     qsa('#strip .th', $main).forEach(function (b) {
       b.addEventListener('click', function () { state.cur = b.getAttribute('data-id'); drawPhotos(); });
     });
-    document.getElementById('addMore').addEventListener('click', function () { document.getElementById('phInput').click(); });
+    document.getElementById('addMore').addEventListener('click', function () { if (!ph.loading) document.getElementById('phInput').click(); });
     bindDrop(document.getElementById('strip'), addFiles);
     document.getElementById('mvL').addEventListener('click', function () { move(p, -1); });
     document.getElementById('mvR').addEventListener('click', function () { move(p, 1); });
     document.getElementById('rmPh').addEventListener('click', function () {
       var i = state.photos.indexOf(p);
       state.photos.splice(i, 1);
+      Editor.release(p); // ImageBitmap.close()、canvas 歸零
       var n = state.photos[Math.min(i, state.photos.length - 1)];
       state.cur = n ? n.id : null;
       state.music.recs = null;
@@ -986,7 +1263,8 @@
       '<p class="small mt-8">新照片排在最前面，' + note + '主頁縮圖以 4:5 直式呈現（IG 2025 年起主頁改為直式縮圖）。</p>' +
       '<div class="ig-mock"><div class="ig-top"><span class="av"></span><span><span class="nm" style="display:block"></span><span class="nm2" style="display:block"></span></span></div>' +
       '<div class="pgrid" id="pgrid"></div></div>' +
-      '<div class="gp-legend"><span><i></i>新照片 · 可拖曳排序</span><span><i class="o"></i>既有貼文</span></div>' +
+      '<div class="gp-legend"><span><i></i>新照片 · 可拖曳排序</span><span><i class="o"></i>既有貼文 · 按「拿掉」模擬封存</span></div>' +
+      '<div id="archBox" class="archbox"></div>' +
       (n ? '<div id="musicBox" class="musicbox"></div>' : '') +
       '<div class="dl">' +
         '<button class="btn btn-block" type="button" id="dlZip"' + (n ? '' : ' disabled') + '>打包成 zip 下載（' + n + ' 張）</button>' +
@@ -1007,15 +1285,21 @@
         '<canvas data-pid="' + p.id + '" width="216" height="270"></canvas><span class="badge">' + pad2(k + 1) + '</span></div>';
     });
     var rest = total - n;
+    // 既有貼文：拿掉的不顯示，其餘依原始順序往前補位（看起來像封存後的主頁）
+    var removed = archRemoved();
+    var kept = existingItems().filter(function (it) { return removed.indexOf(it.k) < 0; });
     for (var k = 0; k < rest; k++) {
-      if (state.existing && state.existing.length) {
-        if (k < state.existing.length) html += '<div class="pc old"><img alt="" src="' + state.existing[k] + '"></div>';
-        else html += '<div class="pc old none"></div>';
-      } else {
-        html += '<div class="pc old">' + Grid.cellHTML(Grid.DEMO_PROFILE[k % Grid.DEMO_PROFILE.length]) + '</div>';
-      }
+      var it = kept[k];
+      if (!it) { html += '<div class="pc old none"></div>'; continue; }
+      html += '<div class="pc old" data-k="' + it.k + '">' + oldThumbHTML(it) +
+        (it.hint ? '<span class="pc-hint">建議拿掉</span>' : '') +
+        '<button class="pc-rm" type="button" data-arch="' + it.k + '" aria-label="暫時拿掉原第 ' + (it.k + 1) + ' 格（不會刪除）"><span>拿掉</span></button></div>';
     }
     g.innerHTML = html;
+    qsa('[data-arch]', g).forEach(function (b) {
+      b.addEventListener('click', function (e) { e.stopPropagation(); archiveOld(Number(b.getAttribute('data-arch'))); });
+    });
+    drawArchived();
     paintThumbs();
     bindGridDrag(g);
     bindDownloads();
@@ -1124,9 +1408,15 @@
     return '<span class="mood-tag">' + m.label + '</span><span>' + m.sentence + '</span>';
   }
 
+  function playBtnHTML(id, title, attr) {
+    return '<button type="button" class="pv-btn" ' + attr + '="' + esc(id) + '" data-title="' + esc(title) + '" aria-pressed="false" aria-label="試聽 15 秒：' + esc(title) + '">' +
+      '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.5v9l7-4.5z"/></svg></button>';
+  }
+
   function renderMusicBox() {
     var box = document.getElementById('musicBox');
     if (!box) return;
+    if (Preview) Preview.stop(); // 重畫推薦區（換一組、不喜歡…）前先停止試聽
     var prefs = Music.load();
     var mood = currentMood();
     if (!Music.hasPrefs(prefs)) {
@@ -1150,8 +1440,10 @@
         return '<li class="song" data-id="' + r.id + '">' +
           '<span class="song-no">' + pad2(k + 1) + '</span>' +
           '<div class="song-body">' +
-            '<p class="song-t">' + esc(r.title) + '</p>' +
-            '<p class="song-a">' + esc(r.artist) + ' · ' + r.genre + '</p>' +
+            '<div class="song-top"><div><p class="song-t">' + esc(r.title) + '</p>' +
+            '<p class="song-a">' + esc(r.artist) + ' · ' + r.genre + '</p></div>' +
+            '<div class="song-pv">' + playBtnHTML(r.id, r.title, 'data-play') + '<span class="pv-hint">試聽</span></div></div>' +
+            '<div class="pv-slot" hidden></div>' +
             '<p class="song-part"><span class="part">從' + r.part + '開始</span>' + r.partWhy + '</p>' +
             '<p class="song-why">' + r.why + '</p>' +
             '<div class="song-act">' +
@@ -1165,7 +1457,8 @@
         '<button class="link swap" type="button" id="moreSongs">' + I.swap + '換一組</button>' +
         '<a class="link muted" href="#/music?from=photos">調整配樂偏好</a>' +
       '</div>' +
-      '<p class="small mt-8">' + I.note.replace('<svg', '<svg class="ic-inline"') + '請到 IG App 加音樂時搜尋這首歌。留格不會把歌放進 IG。</p>';
+      '<p class="small mt-8">' + I.note.replace('<svg', '<svg class="ic-inline"') + '請到 IG App 加音樂時搜尋這首歌。留格不會把歌放進 IG。</p>' +
+      '<p class="small mt-8 pv-foot">試聽 15 秒：以 YouTube 官方影片為主（從建議段落開始，起始秒數為人工判斷，可能不精準）；播不了時改用 Apple Music 30 秒試聽片段。同時間只播一首。按下試聽才會連到 YouTube／Apple。</p>';
 
     qsa('[data-like]', box).forEach(function (b) {
       b.addEventListener('click', function () {
@@ -1174,7 +1467,8 @@
         if (i >= 0) p.likes.splice(i, 1); else { p.likes.push(id); p.dislikes = p.dislikes.filter(function (x) { return x !== id; }); }
         Music.save(p);
         toast(i >= 0 ? '已取消喜歡' : '記住了：之後多推同曲風的歌');
-        renderMusicBox();
+        // 只更新這顆按鈕，不重畫（正在試聽的歌不會被打斷）
+        b.setAttribute('aria-pressed', String(i < 0)); b.textContent = i < 0 ? '已喜歡' : '喜歡';
       });
     });
     qsa('[data-dislike]', box).forEach(function (b) {
@@ -1192,6 +1486,13 @@
         if (fresh[0]) M.recs.splice(idx, 1, fresh[0]); else M.recs.splice(idx, 1);
         toast('不會再推這首，同一位歌手也會少推');
         renderMusicBox();
+      });
+    });
+    qsa('[data-play]', box).forEach(function (b) {
+      b.addEventListener('click', function () {
+        var song = Music.byId(b.getAttribute('data-play'));
+        var slot = qs('.pv-slot', b.closest('.song'));
+        if (song && slot) Preview.toggle(song, slot, b);
       });
     });
     document.getElementById('moreSongs').addEventListener('click', function () {
@@ -1391,6 +1692,7 @@
 
   function viewMusicSettings(prefs) {
     var M = state.music;
+    if (Preview) Preview.stop();
     var likes = prefs.likes.map(Music.byId).filter(Boolean), dislikes = prefs.dislikes.map(Music.byId).filter(Boolean);
     $main.innerHTML =
       '<div class="wrap screen"><div class="two music-set">' +
@@ -1410,8 +1712,12 @@
           '<section><span class="section-label">喜歡的歌手</span>' + tagInputHTML(prefs.artists, 'setArtists', '輸入歌手，按 Enter 加入') + '</section>' +
           '<section><span class="section-label">喜歡的歌</span>' +
             (prefs.songs.length ? '<ul class="songlist">' + prefs.songs.map(function (s, i) {
-              return '<li><span><b>' + esc(s.t) + '</b><em>' + esc(s.a) + '</em></span><button type="button" class="icon-btn" data-rmsong="' + i + '" aria-label="移除 ' + esc(s.t) + '">' + I.close + '</button></li>';
-            }).join('') + '</ul>' : '<p class="small">還沒有填歌。</p>') +
+              return '<li class="has-pv"><span><b>' + esc(s.t) + '</b><em>' + esc(s.a) + '</em></span>' +
+                '<span class="sl-act">' + playBtnHTML(String(i), s.t, 'data-uplay') +
+                '<button type="button" class="icon-btn" data-rmsong="' + i + '" aria-label="移除 ' + esc(s.t) + '">' + I.close + '</button></span>' +
+                '<div class="pv-slot" hidden></div></li>';
+            }).join('') + '</ul>' +
+            '<p class="small mt-8">試聽只用歌名＋歌手查 Apple 的公開 30 秒試聽片段（播 15 秒），找不到就請到 IG 搜尋。</p>' : '<p class="small">還沒有填歌。</p>') +
             '<div class="addsong"><input type="text" id="newT" placeholder="歌名" aria-label="歌名"><input type="text" id="newA" placeholder="歌手" aria-label="歌手"><button class="btn btn-ghost btn-sm" type="button" id="addSong">加入</button></div>' +
             '<button class="link muted mt-16" type="button" id="reTaste">用這些歌重新分析</button>' +
             '<div id="tasteBox"></div>' +
@@ -1427,6 +1733,14 @@
     function persist(msg) { Music.save(p); M.recs = null; toast(msg || '已儲存'); }
     bindGenreChips(qs('.settings', $main), p.genres, function () { persist(); });
     bindTagInput('setArtists', p.artists, function () { persist(); viewMusicSettings(p); });
+    qsa('[data-uplay]', $main).forEach(function (b) {
+      b.addEventListener('click', function () {
+        var sg = p.songs[Number(b.getAttribute('data-uplay'))];
+        if (!sg) return;
+        // 使用者自己加的歌：只查 iTunes，不做 YouTube 自動搜尋、不用 AI
+        Preview.toggle({ id: 'user:' + sg.t + '|' + sg.a, t: sg.t, a: sg.a, youtubeId: null }, qs('.pv-slot', b.closest('li')), b, { itunesOnly: true });
+      });
+    });
     qsa('[data-rmsong]', $main).forEach(function (b) {
       b.addEventListener('click', function () { p.songs.splice(Number(b.getAttribute('data-rmsong')), 1); persist('已移除'); viewMusicSettings(p); });
     });
@@ -1474,7 +1788,8 @@
   var VIEWS = { '': viewHome, upload: viewUpload, style: viewStyle, analysis: viewAnalysis, next: viewNext, photos: viewPhotos, music: viewMusic };
 
   // 給截圖／測試腳本與之後的除錯用
-  window.__app = { state: state, go: go, render: render };
+  window.__app = { state: state, go: go, render: render, toast: toast };
 
+  restoreShot(); // 重新整理後：從 sessionStorage 還原縮小的截圖（有的話）
   render();
 })();

@@ -206,18 +206,24 @@
 
   /* 示範主頁截圖（抽象版 IG 主頁）。回傳 { url, width, height }
    * 格子位置不寫死：和使用者上傳的截圖一樣，交給 js/grid-detect.js 偵測。 */
-  var DEMO_W = 780, DEMO_HEAD = 560;
+  var DEMO_W = 780, DEMO_HEAD = 610, DEMO_NAV = 120;
   function makeDemoScreenshot(cells) {
     cells = cells || DEMO_PROFILE;
     var W = DEMO_W, gap = 3;
     var cw = (W - gap * 2) / 3, ch = cw * 5 / 4;
     var rows = Math.ceil(cells.length / 3);
-    var H = Math.round(DEMO_HEAD + rows * ch + (rows - 1) * gap);
+    var gridBot = Math.round(DEMO_HEAD + rows * ch + (rows - 1) * gap);
+    var H = gridBot + DEMO_NAV;
     var cv = document.createElement('canvas');
     cv.width = W; cv.height = H;
     var ctx = cv.getContext('2d');
     rect(ctx, 0, 0, W, H, '#FBF9F5');
     var ink = '#2B2724', soft = '#DDD5CA', mid = '#B5ADA4';
+    // 狀態列（時間、動態島、電量）— 讓示範圖和手機截圖一樣被分類成「手機」
+    rect(ctx, 40, 14, 46, 16, ink);
+    ctx.fillStyle = ink; ctx.beginPath(); ctx.arc(W / 2 - 60, 22, 12, 0, Math.PI * 2); ctx.arc(W / 2 + 60, 22, 12, 0, Math.PI * 2); ctx.fill();
+    rect(ctx, W / 2 - 60, 10, 120, 24, ink);
+    rect(ctx, W - 92, 14, 52, 16, mid);
     // 頂列：帳號名
     rect(ctx, 36, 40, 180, 22, ink);
     rect(ctx, W - 116, 40, 28, 22, mid); rect(ctx, W - 66, 40, 28, 22, mid);
@@ -237,13 +243,30 @@
       ctx.beginPath(); ctx.arc(80 + i * 128, 480, 38, 0, Math.PI * 2); ctx.stroke();
       ctx.fillStyle = EARTH[i * 2 % EARTH.length]; ctx.beginPath(); ctx.arc(80 + i * 128, 480, 31, 0, Math.PI * 2); ctx.fill();
     }
-    // 分頁線
-    rect(ctx, 0, DEMO_HEAD - 14, W, 2, soft); rect(ctx, 0, DEMO_HEAD - 16, W / 3, 4, ink);
+    // 分頁 icon 列：九宮格｜Reels｜標記，第一個下方一條深色底線
+    var ty = DEMO_HEAD - 44;
+    ctx.lineWidth = 2.5; ctx.strokeStyle = ink; ctx.fillStyle = ink;
+    for (var a = 0; a < 3; a++) for (var b = 0; b < 3; b++) rect(ctx, W / 6 - 13 + a * 9.5, ty - 13 + b * 9.5, 7, 7, ink);
+    ctx.strokeStyle = mid;
+    ctx.strokeRect(W / 2 - 13, ty - 13, 26, 26);
+    ctx.beginPath(); ctx.moveTo(W / 2 - 4, ty - 6); ctx.lineTo(W / 2 + 6, ty); ctx.lineTo(W / 2 - 4, ty + 6); ctx.closePath(); ctx.stroke();
+    ctx.strokeRect(W * 5 / 6 - 13, ty - 13, 26, 26);
+    ctx.beginPath(); ctx.arc(W * 5 / 6, ty - 2, 5, 0, Math.PI * 2); ctx.stroke();
+    rect(ctx, W / 6 - W / 10, DEMO_HEAD - 8, W / 5, 3, ink);
     // 九宮格
     cells.forEach(function (cell, k) {
       var col = k % 3, row = Math.floor(k / 3);
       drawCell(ctx, col * (cw + gap), DEMO_HEAD + row * (ch + gap), cw, ch, cell);
     });
+    // 底部導覽列：5 個小 icon＋home indicator
+    var ny = gridBot + 46;
+    ctx.strokeStyle = ink; ctx.lineWidth = 2.5;
+    for (var n = 0; n < 5; n++) {
+      var cx = W * (n + 0.5) / 5;
+      if (n === 4) { ctx.fillStyle = '#C7B39C'; ctx.beginPath(); ctx.arc(cx, ny, 13, 0, Math.PI * 2); ctx.fill(); }
+      else ctx.strokeRect(cx - 12, ny - 12, 24, 24);
+    }
+    rect(ctx, W / 2 - 90, H - 18, 180, 6, ink);
     return { url: cv.toDataURL('image/png'), width: W, height: H };
   }
 

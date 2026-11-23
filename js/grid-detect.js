@@ -4,32 +4,51 @@
  * 純 canvas 像素分析：不呼叫 AI、不花 token、不送出網路。
  *
  * 公開介面（掛在 window.GridDetect）：
- *   GridDetect.detect(imageOrCanvas)            → Result
- *   GridDetect.fromFrame(result, frame, ratio)  → Result（使用者手動拖框後重算）
- *   GridDetect.pickArchive(result)              → [{ cell, no, reason }]（依貼文數決定 0／1／2 格）
- *   GridDetect.archiveCount(posts)              → 0 | 1 | 2
+ *   GridDetect.detect(src, opts)                → Result
+ *        src：Image／canvas／ImageBitmap（建議先縮到寬 ≤ 1080，見 app.js）
+ *        opts.full = { w, h }：原圖尺寸（src 是縮圖時，結果座標換算回原圖）
+ *        opts.kind = 'phone' | 'desktop'：強制用某一種偵測（使用者按了切換）
+ *   GridDetect.redetect(prevResult, kind)        → Result（用快取的像素重跑，不必重新解碼）
+ *   GridDetect.classify(src, opts)               → { kind, ar, status, nav, reason }
+ *   GridDetect.fromFrame(result, frame, ratio)   → Result（使用者手動拖框後重算）
+ *   GridDetect.pickArchive(result)               → [{ cell, no, reason }]（依貼文數決定 0／1／2 格）
+ *   GridDetect.archiveCount(posts)               → 0 | 1 | 2
  *
  * Result（座標都是原圖像素）：
  *   { ok, confidence, mode:'auto'|'manual', theme:'light'|'dark',
- *     box:{x,y,w,h}, cols:3, colW, cellH, gap, ratio:'3:4'|'4:5'|'1:1',
- *     rows, posts, cells:[{ i,row,col,x,y,w,h,visible,hasPost,postNo,stats }], note }
+ *     kind:'phone'|'desktop'（實際用的偵測）, cls:{ kind:'phone'|'desktop'|'ipad'|'uncertain', … }（自動分類）,
+ *     box:{x,y,w,h}, cols:3, colW, cellH, gap, ratio:'3:4'|'4:5'|'1:1', ratioGuessed,
+ *     rows, posts, cells:[{ i,row,col,x,y,w,h,visible,hasPost,postNo,stats }],
+ *     tabRow, nav, manualFrame, note }
  *
- * 方法（詳見 README「格線偵測」）：
- *   1. 估背景色：取四邊像素做色彩量化，取眾數（淺色、深色模式都適用）。
- *   2. 「非背景」遮罩：與背景色最大通道差 > 門檻。
- *   3. 逐列投影：全是背景的列把畫面切成橫帶（頭像、簡介、按鈕、精選、分頁列、每一排貼文…）。
- *   4. 每條橫帶再做欄投影，切出「方塊」，並找出方塊真正的上下緣。
- *   5. 對每個大方塊提出假設：欄寬 cw、比例（3:4／4:5／1:1）、左緣 x0、縫寬 gap，
- *      用「能解釋幾格貼文」替每個假設打分 —— 頭像、按鈕、精選動態都對不上 3 欄等寬方格，自然被排除；
- *      左右留邊（電腦版、iPad）也因為 x0 由方塊位置推得而自動排除。
- *   6. 用最佳假設從格子區頂端往下排列，逐格檢查「格內有沒有非背景、有變化」→ 判斷是否真的有貼文。
- *   7. 信心分數低於 0.6 → 介面請使用者手動拖框。
+ * 流程：先分類、再偵測
+ *   A. 分類：高÷寬 ≥ 1.7 → 手機；寬 > 高 → 電腦；1.25–1.7 → iPad；1–1.25 → 不確定。
+ *      另外量頂部狀態列、底部導覽列（5 個等距小 icon）當輔助證據。
+ *   B. 手機 → 版型定位（不做通用格線搜尋，避免把頭像當格子）：
+ *      1. 由上往下找 IG「分頁 icon 列」：一條細橫帶，裡面 3–4 個等距小 icon（約在 1/8、3/8、5/8、7/8
+ *         或 1/6、1/2、5/6），其中只有一個 icon 下面有一條短底線（淺色＝黑線、深色＝白線）。
+ *      2. 貼文區 top ＝ 底線／分隔線之下；左右貼齊全寬；三欄等寬。
+ *      3. 格子比例：量第一排的列縫（3:4／4:5／1:1）；量不到就看第一篇的實際高度；再不行預設 3:4 並標「推測」。
+ *      4. 下緣停在底部導覽列上緣（沒有導覽列就到圖底）。
+ *      5. 找不到分頁列 → ok=false，交給使用者手動拖框（不硬給錯框）。
+ *      沒有寫死任何像素位置或比例位置；頭像、簡介、按鈕、精選都在分頁列之上，不可能被當成貼文。
+ *   C. 電腦／iPad → 沿用第二輪的通用偵測（下面 1–7）：
+ *      1. 估背景色：取四邊像素做色彩量化，取眾數（淺色、深色模式都適用）。
+ *      2. 「非背景」遮罩：與背景色最大通道差 > 門檻。
+ *      3. 逐列投影：全是背景的列把畫面切成橫帶（頭像、簡介、按鈕、精選、分頁列、每一排貼文…）。
+ *      4. 每條橫帶再做欄投影，切出「方塊」，並找出方塊真正的上下緣。
+ *      5. 對每個大方塊提出假設：欄寬 cw、比例（3:4／4:5／1:1）、左緣 x0、縫寬 gap，
+ *         用「能解釋幾格貼文」替每個假設打分 —— 頭像、按鈕、精選動態都對不上 3 欄等寬方格，自然被排除；
+ *         左右留邊（電腦版、iPad）也因為 x0 由方塊位置推得而自動排除。
+ *      6. 用最佳假設從格子區頂端往下排列，逐格檢查「格內有沒有非背景、有變化」→ 判斷是否真的有貼文。
+ *      7. 信心分數低於 0.6 → 介面請使用者手動拖框。
+ *   D. 不確定 → 兩種都試，挑可信的；介面仍會問「這是手機還是電腦截圖？」。兩種都失敗 → 手動拖框。
  */
 (function () {
   'use strict';
 
   var RATIOS = [{ id: '3:4', r: 4 / 3 }, { id: '4:5', r: 5 / 4 }, { id: '1:1', r: 1 }];
-  var MAX_W = 900;           // 工作解析度：寬度上限（效能）
+  var MAX_W = 1080;          // 工作解析度：寬度上限（效能；iOS canvas 面積上限約 16.7M 像素）
   var MIN_CELL = 0.12;       // 貼文格寬至少佔截圖寬度的比例
   var OK_CONF = 0.6;
 
@@ -38,11 +57,12 @@
     return RATIOS[0];
   }
 
-  /* ---------- 1. 讀像素 ---------- */
-  function getPixels(src) {
-    var nw = src.naturalWidth || src.width, nh = src.naturalHeight || src.height;
-    var s = Math.min(1, MAX_W / nw);
-    var w = Math.max(1, Math.round(nw * s)), h = Math.max(1, Math.round(nh * s));
+  /* ---------- 1. 讀像素：畫一次、getImageData 一次 ---------- */
+  function getPixels(src, full) {
+    var sw = src.naturalWidth || src.width, sh = src.naturalHeight || src.height;
+    var nw = (full && full.w) || sw, nh = (full && full.h) || sh;
+    var s = Math.min(1, MAX_W / sw);
+    var w = Math.max(1, Math.round(sw * s)), h = Math.max(1, Math.round(sh * s));
     var cv = document.createElement('canvas');
     cv.width = w; cv.height = h;
     var ctx = cv.getContext('2d', { willReadFrequently: true });
@@ -50,6 +70,7 @@
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(src, 0, 0, w, h);
     var id = ctx.getImageData(0, 0, w, h);
+    cv.width = 0; cv.height = 0; // 釋放 canvas 記憶體（iOS Safari 很在意）
     return { data: id.data, w: w, h: h, sx: w / nw, sy: h / nh, nw: nw, nh: nh };
   }
 
@@ -299,7 +320,8 @@
     while (top < bottomLimit - ch * 0.35 && m < 60) {
       if (geo.rowTops && geo.rowTops[m + geo.minRow] !== undefined) top = geo.rowTops[m + geo.minRow];
       var visTop = Math.max(0, top), visBot = Math.min(bottomLimit, top + ch);
-      visBot = contentBottom(M, geo.x0, 3 * cw + 2 * g, visTop, visBot, ch);
+      // fullRows（手機版型定位、手動框）：框內每一排都列出，空的就標空格；否則看實際內容到哪裡
+      if (!geo.fullRows) visBot = contentBottom(M, geo.x0, 3 * cw + 2 * g, visTop, visBot, ch);
       var vis = Math.max(0, visBot - visTop) / ch;
       if (vis >= 0.35) {
         rows++; lastVisBot = visBot;
@@ -319,7 +341,7 @@
       top += pitch; m++;
     }
     var gridW = 3 * cw + 2 * g;
-    var boxBottom = rows ? lastVisBot : geo.y0;
+    var boxBottom = geo.fullRows ? bottomLimit : rows ? lastVisBot : geo.y0;
     var boxTop = Math.max(0, cells.length ? cells[0].y * sy : geo.y0);
     return {
       box: { x: geo.x0 / sx, y: boxTop / sy, w: gridW / sx, h: Math.max(0, boxBottom - boxTop) / sy },
@@ -329,9 +351,10 @@
   }
   function round2(v) { return Math.round(v * 100) / 100; }
 
-  /* ---------- 主函式 ---------- */
-  function detect(src) {
-    var px = getPixels(src);
+  /* =========================================================
+     C. 電腦／iPad：第二輪的通用格線偵測（原樣保留）
+     ========================================================= */
+  function detectDesktop(px) {
     var bg = estimateBg(px);
     var M = buildMask(px, bg, bg.dark ? 6 : 8);
     var bands = findBands(M);
@@ -350,7 +373,7 @@
     var ctx = { px: px, M: M, bg: bg };
     var res;
     if (!best) {
-      res = emptyResult(px, bg, '找不到像貼文格子的方塊');
+      res = emptyResult('找不到像貼文格子的方塊');
     } else {
       var H = bestH, sc = best.sc;
       // 用對齊的方塊微調欄寬與左緣
@@ -390,14 +413,393 @@
       res.ok = res.confidence >= OK_CONF;
       res.note = res.ok ? '' : '格子區不太確定';
     }
-    res.mode = 'auto';
+    res.kind = 'desktop';
     res.theme = bg.dark ? 'dark' : 'light';
-    res.image = { w: px.nw, h: px.nh };
-    Object.defineProperty(res, '_ctx', { value: ctx, enumerable: false });
+    Object.defineProperty(res, '_ctx', { value: ctx, enumerable: false, writable: true });
     return res;
   }
 
-  function emptyResult(px, bg, note) {
+  /* =========================================================
+     A. 分類＋B. 手機版型定位
+     ========================================================= */
+  // 手機的背景色：取上方 12% 的眾數（狀態列、頂列都是純背景；四邊常被貼文佔滿，不準）
+  function phoneBg(px) {
+    var d = px.data, w = px.w, h = px.h, bins = {}, best = null;
+    var yEnd = Math.max(2, Math.round(h * 0.12)), sx = Math.max(1, Math.round(w / 160)), sy = Math.max(1, Math.round(yEnd / 120));
+    for (var y = 0; y < yEnd; y += sy) for (var x = 0; x < w; x += sx) {
+      var i = (y * w + x) * 4;
+      var k = (d[i] >> 3) + ',' + (d[i + 1] >> 3) + ',' + (d[i + 2] >> 3);
+      var b = bins[k] || (bins[k] = { n: 0, r: 0, g: 0, b: 0 });
+      b.n++; b.r += d[i]; b.g += d[i + 1]; b.b += d[i + 2];
+      if (!best || b.n > best.n) best = b;
+    }
+    var r = best.r / best.n, g = best.g / best.n, bb = best.b / best.n;
+    var lum = 0.299 * r + 0.587 * g + 0.114 * bb;
+    return { r: r, g: g, b: bb, lum: lum, dark: lum < 110 };
+  }
+
+  // 手機用的像素脈絡（分類與版型定位共用，只算一次）
+  function phoneCtx(px) {
+    if (px._phone) return px._phone;
+    var bg = phoneBg(px);
+    var M = buildMask(px, bg, 12); // 門檻稍高：容忍 JPEG（HEIC 轉檔）雜訊
+    var c = { px: px, M: M, bg: bg };
+    Object.defineProperty(px, '_phone', { value: c, enumerable: false });
+    return c;
+  }
+
+  // 某個 y 範圍內的橫帶（以「幾乎全是背景的列」切開）
+  function bandsIn(M, ya, yb) {
+    var lim = Math.max(1, Math.round(M.w * 0.002)), out = [], s = -1;
+    for (var y = ya; y <= yb; y++) {
+      var blank = y === yb || M.rowCnt[y] <= lim;
+      if (!blank && s < 0) s = y;
+      if (blank && s >= 0) { out.push({ y0: s, y1: y - 1, h: y - s }); s = -1; }
+    }
+    return out;
+  }
+  // 一條橫帶裡的水平小塊（欄投影），間隔 < mergeGap 的併成同一塊（icon 內部常有縫）
+  function blobsIn(M, y0, y1, mergeGap) {
+    var w = M.w, col = new Int32Array(w), out = [];
+    for (var y = y0; y <= y1; y++) { var off = y * w; for (var x = 0; x < w; x++) col[x] += M.m[off + x]; }
+    var s = -1, last = -1;
+    for (var x2 = 0; x2 <= w; x2++) {
+      var on = x2 < w && col[x2] > 0;
+      if (on) {
+        if (s < 0) s = x2;
+        else if (x2 - last - 1 > mergeGap) { out.push({ x0: s, x1: last }); s = x2; }
+        last = x2;
+      }
+    }
+    if (s >= 0) out.push({ x0: s, x1: last });
+    out.forEach(function (b) { b.w = b.x1 - b.x0 + 1; b.c = (b.x0 + b.x1) / 2; });
+    return out;
+  }
+  // 「深色線」：與背景亮度差很大（淺色模式的黑線、深色模式的白線）；淡灰分隔線不算
+  function strongRun(px, bg, y) {
+    var d = px.data, w = px.w, best = null, s = -1, total = 0;
+    for (var x = 0; x <= w; x++) {
+      var on = false;
+      if (x < w) {
+        var i = (y * w + x) * 4;
+        var l = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        on = Math.abs(l - bg.lum) > 90;
+      }
+      if (on) { total++; if (s < 0) s = x; }
+      if (!on && s >= 0) { if (!best || x - s > best.w) best = { x0: s, x1: x - 1, w: x - s }; s = -1; }
+    }
+    if (best) { best.c = (best.x0 + best.x1) / 2; best.total = total; }
+    return best;
+  }
+
+  // 一整列幾乎是同一個顏色（分隔線）；照片的第一列會有明顯的亮度變化
+  function uniformRow(px, y) {
+    var d = px.data, w = px.w, n = 0, s = 0, s2 = 0, step = Math.max(1, Math.round(w / 200));
+    for (var x = 0; x < w; x += step) {
+      var i = (y * w + x) * 4, l = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      n++; s += l; s2 += l * l;
+    }
+    var m = s / n;
+    return Math.sqrt(Math.max(0, s2 / n - m * m)) < 8;
+  }
+
+  /* 底部導覽列：5 個等距小 icon（＋可能有 home indicator 細橫條） */
+  function findNav(P) {
+    var M = P.M, W = M.w, H = M.h;
+    var bands = bandsIn(M, Math.round(H * 0.82), H);
+    var home = null, icons = null;
+    for (var i = bands.length - 1; i >= 0; i--) {
+      var b = bands[i];
+      if (!home && !icons && b.h <= H * 0.012 && b.y0 > H * 0.95) {
+        var hb = blobsIn(M, b.y0, b.y1, Math.round(W * 0.01));
+        if (hb.length === 1 && hb[0].w > W * 0.2 && hb[0].w < W * 0.5 && Math.abs(hb[0].c - W / 2) < W * 0.05) { home = b; continue; }
+      }
+      if (b.h < W * 0.015 || b.h > W * 0.1) continue;
+      var bl = blobsIn(M, b.y0, b.y1, Math.round(W * 0.02));
+      if (bl.length < 4 || bl.length > 6) continue;
+      if (bl.some(function (x) { return x.w > W * 0.13; })) continue;
+      var hit = {};
+      bl.forEach(function (x) {
+        var k = Math.round(x.c / W * 5 - 0.5);
+        if (k >= 0 && k < 5 && Math.abs(x.c - (k + 0.5) * W / 5) < W * 0.045) hit[k] = 1;
+      });
+      if (Object.keys(hit).length >= 4) { icons = b; break; }
+    }
+    if (!icons) return null;
+    // 導覽列上緣：icon 之上若有一條分隔線就用它，否則留 icon 高度的 0.7 倍
+    var top = Math.max(0, icons.y0 - Math.round(icons.h * 0.7));
+    var j = bands.indexOf(icons);
+    if (j > 0) {
+      var prev = bands[j - 1];
+      if (prev.h <= 3 && icons.y0 - prev.y1 < icons.h * 1.6 && M.rowCnt[prev.y0] > W * 0.85) top = prev.y0;
+    }
+    return { top: top, iconY0: icons.y0, iconY1: icons.y1, home: !!home };
+  }
+
+  /* 頂部狀態列：上方 7% 內有一條細帶，左邊有時間、右邊有訊號／電量 */
+  function findStatus(P) {
+    var M = P.M, W = M.w, H = M.h;
+    var bands = bandsIn(M, 0, Math.round(H * 0.07));
+    for (var i = 0; i < bands.length; i++) {
+      var b = bands[i];
+      if (b.h > H * 0.035) continue;
+      var bl = blobsIn(M, b.y0, b.y1, Math.round(W * 0.015));
+      var left = bl.some(function (x) { return x.c > W * 0.05 && x.c < W * 0.35 && x.w < W * 0.25; });
+      var right = bl.some(function (x) { return x.c > W * 0.65 && x.c < W * 0.97 && x.w < W * 0.3; });
+      if (left && right) return true;
+    }
+    return false;
+  }
+
+  function classifyPx(px) {
+    var W = px.nw, H = px.nh, ar = H / W, P = phoneCtx(px);
+    var nav = findNav(P), status = findStatus(P), kind, reason;
+    if (ar >= 1.7) { kind = 'phone'; reason = '高÷寬 ' + ar.toFixed(2) + ' ≥ 1.7'; }
+    else if (ar >= 1.6 && nav && status) { kind = 'phone'; reason = '高÷寬 ' + ar.toFixed(2) + '，有狀態列與底部導覽列'; }
+    else if (W > H) { kind = 'desktop'; reason = '橫式（寬 > 高）'; }
+    else if (ar >= 1.25) { kind = 'ipad'; reason = '高÷寬 ' + ar.toFixed(2) + '，介於手機與電腦之間'; }
+    else { kind = 'uncertain'; reason = '高÷寬 ' + ar.toFixed(2) + '，接近正方形'; }
+    return { kind: kind, ar: round2(ar), status: status, nav: !!nav, reason: reason };
+  }
+
+  /* 分頁 icon 列：由上往下找第一條符合特徵的橫帶 */
+  function findTabRow(P, yLimit) {
+    var M = P.M, px = P.px, W = M.w, H = M.h;
+    var bands = bandsIn(M, Math.round(H * 0.06), yLimit);
+    var fallback = null;
+    for (var i = 0; i < bands.length; i++) {
+      var b = bands[i];
+      // icon 大小跟著寬度走（各機型、裁切過的截圖都一樣），所以用寬度當尺度，不用高度
+      if (b.h < W * 0.015 || b.h > W * 0.095) continue;
+      var bl = blobsIn(M, b.y0, b.y1, Math.round(W * 0.02));
+      var n = bl.length;
+      if (n < 3 || n > 4) continue;
+      var ws = bl.map(function (x) { return x.w; });
+      var wMin = Math.min.apply(null, ws), wMax = Math.max.apply(null, ws);
+      if (wMin < W * 0.018 || wMax > W * 0.11 || wMax / wMin > 2.6) continue;
+      var aligned = bl.every(function (x, k) { return Math.abs(x.c - (k + 0.5) * W / n) < W * 0.035; });
+      if (!aligned) continue;
+      // 底線：分頁列下方不遠處，一條很深（或很亮）的短橫線，只在其中一個 icon 下
+      var ul = null, sep = null, yEnd = Math.min(H - 1, b.y1 + Math.round(W * 0.07));
+      for (var y = b.y1 + 1; y <= yEnd; y++) {
+        var run = strongRun(px, P.bg, y);
+        if (run && run.w >= W * 0.04 && run.w <= W * (1 / n + 0.04) && run.total < run.w * 1.3) {
+          var under = bl.filter(function (x) { return Math.abs(x.c - run.c) < W * 0.05; });
+          if (under.length === 1) {
+            if (!ul) ul = { y0: y, y1: y, x0: run.x0, x1: run.x1, tab: bl.indexOf(under[0]) };
+            else if (y === ul.y1 + 1) ul.y1 = y;
+          }
+        } else if (ul && y > ul.y1 + 1 && !sep) {
+          // 底線之後的細分隔線（淡灰、近乎全寬、整條同一個顏色；貼文第一列不是）
+          if (M.rowCnt[y] > W * 0.85 && uniformRow(px, y)) sep = { y0: y, y1: y };
+        }
+        if (!ul && M.rowCnt[y] > W * 0.85 && uniformRow(px, y)) { if (!sep) sep = { y0: y, y1: y }; else if (y === sep.y1 + 1) sep.y1 = y; }
+        if (sep && y > sep.y1 + 1 && M.rowCnt[y] > W * 0.25) break; // 已經進到貼文
+      }
+      if (ul && ul.y1 - ul.y0 > W * 0.012) ul = null; // 太粗，不是底線
+      if (sep && y > sep.y1 + 1 && M.rowCnt[sep.y1 + 1] > W * 0.85 && uniformRow(px, sep.y1 + 1)) sep.y1++;
+      var hit = { y0: b.y0, y1: b.y1, n: n, centers: bl.map(function (x) { return x.c; }), underline: ul, separator: sep };
+      hit.bottom = Math.max(b.y1, ul ? ul.y1 : 0, sep ? sep.y1 : 0);
+      if (ul) return hit;
+      if (sep && !fallback) fallback = hit; // 沒底線但有分隔線：備用，信心較低
+    }
+    return fallback;
+  }
+
+  // 每一欄的「與背景差異」逐列平均（量列縫、量貼文高度用）
+  function colProfile(px, bg, xa, xb, ya, yb) {
+    var d = px.data, w = px.w, out = new Float32Array(Math.max(0, yb - ya));
+    var step = Math.max(1, Math.round((xb - xa) / 120));
+    for (var y = ya; y < yb; y++) {
+      var off = y * w, s = 0, n = 0;
+      for (var x = Math.round(xa); x < xb; x += step) {
+        var i = (off + x) * 4;
+        s += Math.max(Math.abs(d[i] - bg.r), Math.abs(d[i + 1] - bg.g), Math.abs(d[i + 2] - bg.b)); n++;
+      }
+      out[y - ya] = n ? s / n : 0;
+    }
+    return out;
+  }
+  function median(arr, a, b) {
+    a = Math.max(0, Math.round(a)); b = Math.min(arr.length, Math.round(b));
+    if (b <= a) return 0;
+    var v = Array.prototype.slice.call(arr, a, b).sort(function (p, q) { return p - q; });
+    return v[v.length >> 1];
+  }
+  function meanOf(arr, a, b) {
+    a = Math.max(0, Math.round(a)); b = Math.min(arr.length, Math.round(b));
+    if (b <= a) return 0;
+    var s = 0; for (var i = a; i < b; i++) s += arr[i];
+    return s / (b - a);
+  }
+  function minOf(arr, a, b) {
+    a = Math.max(0, Math.round(a)); b = Math.min(arr.length, Math.round(b));
+    var m = Infinity; for (var i = a; i < b; i++) if (arr[i] < m) m = arr[i];
+    return m;
+  }
+
+  /* 量格子比例：在預期的列縫位置找「差異突然變小」的縫；量不到就量第一篇的高度 */
+  function measureRatio(P, top, bottom, cw, g) {
+    var px = P.px, prof = [];
+    for (var c = 0; c < 3; c++) {
+      var x = c * (cw + g);
+      prof.push(colProfile(px, P.bg, x + cw * 0.06, x + cw * 0.94, top, bottom));
+    }
+    var best = null;
+    RATIOS.forEach(function (R, ri) {
+      var ch = cw * R.r, score = 0, miss = 0;
+      for (var row = 1; row <= 3; row++) {
+        var ys = row * ch + (row - 1) * g; // 相對 top 的列縫位置
+        if (ys + g + 4 > bottom - top) break;
+        for (var c2 = 0; c2 < 3; c2++) {
+          var p = prof[c2];
+          var inside = median(p, ys - ch * 0.12, ys - ch * 0.03);
+          if (inside < 8) continue;                                  // 這格沒貼文
+          var nearEnd = meanOf(p, ys - ch * 0.025, ys - 3);
+          if (nearEnd < inside * 0.5) { miss++; continue; }          // 貼文在列縫之前就結束了 → 不是這個比例
+          var dip = minOf(p, ys - 2, ys + g + 3);
+          if (dip <= inside * 0.6) score++; else miss++;             // 該有縫的地方沒有縫 → 扣分
+        }
+      }
+      var s = score - miss + (R.id === '3:4' ? 0.2 : R.id === '4:5' ? 0.1 : 0);
+      if (score && score > miss && (!best || s > best.s)) best = { s: s, R: R, score: score };
+    });
+    if (best) return { R: best.R, how: 'seam', seams: best.score };
+    // 量不到列縫（例如只有 1 篇、底下全白）→ 量第一篇的非背景高度
+    var p0 = prof[0], head = median(p0, 0, Math.min(p0.length, cw * 0.3));
+    if (head >= 8) {
+      var run = 0, end = -1;
+      for (var y = 0; y < p0.length; y++) {
+        if (p0[y] < Math.max(3, head * 0.15)) { run++; if (run >= 6) { end = y - run + 1; break; } }
+        else run = 0;
+      }
+      if (end > 0) {
+        var r0 = end / cw, near = RATIOS.slice().sort(function (a, b) { return Math.abs(a.r - r0) - Math.abs(b.r - r0); })[0];
+        if (Math.abs(near.r - r0) / near.r < 0.06) return { R: near, how: 'post' };
+      }
+    }
+    return { R: ratioById('3:4'), how: 'guess' };
+  }
+
+  function detectPhone(px) {
+    var P = phoneCtx(px), M = P.M, W = px.w, H = px.h;
+    var nav = findNav(P);
+    var bottom = nav ? nav.top : H;
+    var tab = findTabRow(P, Math.round(nav ? nav.top : H * 0.94));
+    var ctx = { px: px, M: M, bg: P.bg };
+    var res;
+    var navOrig = nav ? { top: nav.top / px.sy } : null;
+    if (!tab) {
+      res = emptyResult('找不到 IG 的分頁圖示列');
+      var fy = H * 0.45;
+      res.manualFrame = { x: 0, y: fy / px.sy, w: px.nw, h: Math.max(H * 0.2, bottom - fy) / px.sy };
+    } else {
+      var top = tab.bottom + 1;
+      // 第一篇貼文若緊接在下方（2.5% 圖高內），以它的上緣為準；要連續 3 列都夠寬才算（避免把底線、分隔線當貼文）
+      for (var y = top; y < Math.min(bottom - 3, top + W * 0.05); y++) {
+        if (M.rowCnt[y] > W * 0.15 && M.rowCnt[y + 1] > W * 0.15 && M.rowCnt[y + 2] > W * 0.15) { top = y; break; }
+      }
+      var g = Math.max(1, Math.round(W * 0.0025));
+      var cw = (W - 2 * g) / 3;
+      var mr = measureRatio(P, top, bottom, cw, g);
+      var geo = { x0: 0, cw: cw, g: g, r: mr.R.r, ratio: mr.R.id, y0: top, bottom: bottom, minRow: 0, fullRows: true };
+      res = buildCells(ctx, geo);
+      res.box = { x: 0, y: top / px.sy, w: px.nw, h: (bottom - top) / px.sy };
+      res.ratioGuessed = mr.how === 'guess';
+      res.ratioHow = mr.how;
+      var conf = tab.underline ? 0.92 : 0.72;
+      if (res.ratioGuessed) conf -= 0.08;
+      if (!res.rows) conf = 0.3;
+      res.confidence = round2(conf);
+      res.ok = res.confidence >= OK_CONF;
+      res.note = res.ok ? '' : '分頁列下方看不到貼文格';
+      res.tabRow = { y: tab.y0 / px.sy, h: (tab.y1 - tab.y0 + 1) / px.sy, bottom: tab.bottom / px.sy, icons: tab.n, underline: !!tab.underline, separator: !!tab.separator };
+      res.manualFrame = { x: 0, y: res.box.y, w: px.nw, h: res.box.h };
+    }
+    res.nav = navOrig;
+    res.kind = 'phone';
+    res.theme = P.bg.dark ? 'dark' : 'light';
+    Object.defineProperty(res, '_ctx', { value: ctx, enumerable: false, writable: true });
+    return res;
+  }
+
+  /* ---------- 主函式：先分類、再偵測 ---------- */
+  function run(px, forced) {
+    var t0 = now();
+    var cls = classifyPx(px), res;
+    var kind = forced || cls.kind;
+    if (kind === 'phone') res = detectPhone(px);
+    else if (kind === 'desktop' || kind === 'ipad') res = detectDesktop(px);
+    else {
+      // 不確定：兩種都試，挑可信度高的（介面仍會問使用者）
+      var a = detectPhone(px), b = detectDesktop(px);
+      if (a.ok && (!b.ok || a.confidence >= b.confidence)) res = a;
+      else if (b.ok) res = b;
+      else { res = a; res.manualFrame = res.manualFrame || null; }
+      res.tried = ['phone', 'desktop'];
+    }
+    res.cls = cls;
+    res.forced = forced || null;
+    res.mode = 'auto';
+    res.image = { w: px.nw, h: px.nh };
+    res.ms = Math.round(now() - t0);
+    if (!res.manualFrame && res.box) res.manualFrame = { x: res.box.x, y: res.box.y, w: res.box.w, h: res.box.h };
+    Object.defineProperty(res, '_px', { value: px, enumerable: false });
+    return res;
+  }
+  function now() { return (typeof performance !== 'undefined' ? performance : Date).now(); }
+
+  /* 讀圖並縮到「分析用」寬度（預設 1080，等比）。
+   *   blob：File／Blob；url：同一張圖的 object URL（預覽也用它，不另外解碼一次）
+   *   回傳 Promise<{ src, w, h, how }>：src 是縮小後的 ImageBitmap 或 canvas（寬 ≤ maxW），w/h 是原圖尺寸。
+   *   用完請呼叫 GridDetect.release(src)（ImageBitmap.close()／canvas 寬高設 0）。
+   *   iOS Safari 的 canvas 面積上限約 16.7M 像素，全解析度 1290×2796 也還在上限內，但縮到 1080 寬可省一半以上記憶體。 */
+  function decode(blob, url, maxW) {
+    maxW = maxW || MAX_W;
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      img.decoding = 'async';
+      img.onload = function () { resolve(img); };
+      img.onerror = function () { var e = new Error('decode'); e.code = 'decode'; reject(e); };
+      img.src = url;
+    }).then(function (img) {
+      var w = img.naturalWidth, h = img.naturalHeight;
+      if (!w || !h) { var e = new Error('decode'); e.code = 'decode'; throw e; }
+      if (w <= maxW) return { src: img, w: w, h: h, how: 'original' };
+      var tw = maxW, th = Math.max(1, Math.round(h * maxW / w));
+      function viaCanvas() {
+        var cv = document.createElement('canvas');
+        cv.width = tw; cv.height = th;
+        var c = cv.getContext('2d');
+        c.imageSmoothingQuality = 'high';
+        c.drawImage(img, 0, 0, tw, th);
+        return { src: cv, w: w, h: h, how: 'canvas' };
+      }
+      if (typeof createImageBitmap !== 'function' || !blob) return viaCanvas();
+      return createImageBitmap(blob, { resizeWidth: tw, resizeHeight: th, resizeQuality: 'high' }).then(function (bmp) {
+        if (bmp.width !== tw) { try { bmp.close(); } catch (e) {} return viaCanvas(); } // 舊版 Safari 會忽略 resize 選項
+        return { src: bmp, w: w, h: h, how: 'createImageBitmap' };
+      }, viaCanvas);
+    });
+  }
+  function release(src) {
+    if (!src) return;
+    try { if (typeof src.close === 'function') src.close(); } catch (e) {}
+    if (src.getContext) { src.width = 0; src.height = 0; }
+  }
+
+  function detect(src, opts) {
+    opts = opts || {};
+    return run(getPixels(src, opts.full), opts.kind);
+  }
+  function redetect(prev, kind) {
+    return run(prev._px, kind);
+  }
+  function classify(src, opts) {
+    return classifyPx(getPixels(src, opts && opts.full));
+  }
+
+  function emptyResult(note) {
     return {
       ok: false, confidence: 0, box: null, cols: 3, colW: 0, cellH: 0, gap: 0, ratio: '3:4',
       rows: 0, posts: 0, cells: [], note: note
@@ -411,12 +813,14 @@
     var g = Math.max(1, Math.round(px.w * 0.002));
     var x0 = frame.x * px.sx, w = frame.w * px.sx;
     var cw = (w - 2 * g) / 3;
-    var geo = { x0: x0, cw: cw, g: g, r: R.r, ratio: R.id, y0: frame.y * px.sy, bottom: Math.min(px.h, (frame.y + frame.h) * px.sy), minRow: 0 };
+    var geo = { x0: x0, cw: cw, g: g, r: R.r, ratio: R.id, y0: frame.y * px.sy, bottom: Math.min(px.h, (frame.y + frame.h) * px.sy), minRow: 0, fullRows: true };
     var res = buildCells(ctx, geo);
     res.box = { x: frame.x, y: frame.y, w: frame.w, h: frame.h };
     res.ok = true; res.confidence = 1; res.mode = 'manual'; res.note = '';
-    res.theme = prev.theme; res.image = prev.image;
+    res.theme = prev.theme; res.image = prev.image; res.kind = prev.kind; res.cls = prev.cls; res.forced = prev.forced;
+    res.manualFrame = { x: frame.x, y: frame.y, w: frame.w, h: frame.h };
     Object.defineProperty(res, '_ctx', { value: ctx, enumerable: false });
+    Object.defineProperty(res, '_px', { value: prev._px, enumerable: false });
     return res;
   }
 
@@ -474,8 +878,15 @@
     RATIOS: RATIOS,
     OK_CONF: OK_CONF,
     detect: detect,
+    redetect: redetect,
+    classify: classify,
+    decode: decode,
+    release: release,
+    MAX_W: MAX_W,
     fromFrame: fromFrame,
     pickArchive: pickArchive,
-    archiveCount: archiveCount
+    archiveCount: archiveCount,
+    // 測試／除錯用（不屬於穩定介面）
+    _dbg: { getPixels: getPixels, phoneCtx: phoneCtx, bandsIn: bandsIn, blobsIn: blobsIn, findTabRow: findTabRow, findNav: findNav }
   };
 })();

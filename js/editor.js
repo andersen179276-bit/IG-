@@ -2,7 +2,7 @@
  * editor.js — 第 5 步「整理新照片」的 canvas 處理（全部在瀏覽器本地完成）
  * ------------------------------------------------------------
  * 不呼叫任何 AI、不送出網路。功能：
- *   - 讀檔並縮到長邊 2400px 以內（效能）
+ *   - 讀檔並縮到長邊 2160px 以內（createImageBitmap 縮圖；效能與 iOS 記憶體）
  *   - 裁成 4:5（平移＋縮放）
  *   - 微調水平（−10°～+10°），旋轉後自動放大避免黑邊
  *   - 亮度／對比／色溫（逐像素運算，真的改變輸出）
@@ -11,7 +11,7 @@
 (function () {
   'use strict';
 
-  var MAX_SIDE = 2400;
+  var MAX_SIDE = 2160; // 第三輪：從 2400 降到 2160（iPhone Safari 記憶體較保守）
   var RATIO = 4 / 5; // 寬 / 高
   var uid = 0;
 
@@ -19,7 +19,9 @@
     return { rotate: 0, zoom: 1, panX: 0, panY: 0, brightness: 0, contrast: 0, temperature: 0 };
   }
 
-  /** 讀入一個 File，回傳 Promise<Photo> */
+  /** 讀入一個 File，回傳 Promise<Photo>
+   *  先只解碼取得尺寸，再用 createImageBitmap(resizeWidth/Height) 直接縮到長邊 ≤ 2160（iPhone 記憶體較保守），
+   *  不支援時退回 Image＋canvas。失敗時 Error.code = 'heic'（HEIC 無法解碼）或 'decode'。 */
   function loadFile(file) {
     return new Promise(function (resolve, reject) {
       var url = URL.createObjectURL(file);
@@ -27,23 +29,51 @@
       img.onload = function () {
         var w = img.naturalWidth, h = img.naturalHeight;
         var s = Math.min(1, MAX_SIDE / Math.max(w, h));
-        var src = img;
-        if (s < 1) {
+        var tw = Math.max(1, Math.round(w * s)), th = Math.max(1, Math.round(h * s));
+        function viaCanvas() {
           var cv = document.createElement('canvas');
-          cv.width = Math.round(w * s); cv.height = Math.round(h * s);
-          cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-          src = cv; w = cv.width; h = cv.height;
+          cv.width = tw; cv.height = th;
+          var c = cv.getContext('2d'); c.imageSmoothingQuality = 'high';
+          c.drawImage(img, 0, 0, tw, th);
+          return cv;
         }
-        URL.revokeObjectURL(url);
-        var p = defaults();
-        p.id = 'p' + (++uid);
-        p.name = file.name || ('photo-' + uid);
-        p.src = src; p.w = w; p.h = h;
-        resolve(p);
+        var p0;
+        if (s >= 1) p0 = Promise.resolve(img);
+        else if (typeof createImageBitmap === 'function') {
+          p0 = createImageBitmap(file, { resizeWidth: tw, resizeHeight: th, resizeQuality: 'high' }).then(function (b) {
+            if (b.width !== tw) { try { b.close(); } catch (e) {} return viaCanvas(); }
+            return b;
+          }, viaCanvas);
+        } else p0 = Promise.resolve(viaCanvas());
+        p0.then(function (src) {
+          if (src !== img) { URL.revokeObjectURL(url); img.src = ''; }
+          var p = defaults();
+          p.id = 'p' + (++uid);
+          p.name = file.name || ('photo-' + uid);
+          p.src = src; p.w = tw; p.h = th;
+          p._url = src === img ? url : null;
+          resolve(p);
+        });
       };
-      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('無法讀取：' + file.name)); };
+      img.onerror = function () {
+        URL.revokeObjectURL(url);
+        var heic = /heic|heif/i.test(file.type) || /\.hei[cf]$/i.test(file.name || '');
+        var e = new Error('無法讀取：' + file.name); e.code = heic ? 'heic' : 'decode';
+        reject(e);
+      };
       img.src = url;
     });
+  }
+
+  /** 移除照片時釋放記憶體：ImageBitmap.close()、canvas 寬高設 0、object URL 收回 */
+  function release(p) {
+    if (!p) return;
+    var s = p.src;
+    try { if (s && typeof s.close === 'function') s.close(); } catch (e) {}
+    if (s && s.getContext) { s.width = 0; s.height = 0; }
+    if (p._url) { URL.revokeObjectURL(p._url); p._url = null; }
+    if (p._thumb) { p._thumb.width = 0; p._thumb.height = 0; p._thumb = null; }
+    p.src = null;
   }
 
   /* 計算目前設定下，影像要畫多大、能平移多少 */
@@ -191,6 +221,7 @@
     RATIO: RATIO,
     defaults: defaults,
     loadFile: loadFile,
+    release: release,
     render: render,
     pan: pan,
     exportJPEG: exportJPEG,
