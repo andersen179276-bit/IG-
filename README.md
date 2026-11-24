@@ -35,7 +35,7 @@ python3 -m http.server 8765 --bind 127.0.0.1
 |---|---|
 | `#/` | 首頁 |
 | `#/upload` | 01 上傳主頁截圖。讀取中顯示細線轉圈「正在讀取主頁…」；完成後顯示「偵測到：手機截圖」＋「手機｜電腦」切換、「找到貼文區：N 篇貼文」 |
-| `#/style` | 02 選類型（6 種） |
+| `#/style` | 02 選喜歡的樣子：一張一張看 6 張參考主頁、可複選，按「用這些喜好」後自動歸納方向並直接套用（多種溫度自動七成主色／三成點綴／黑白過渡）；之後只留「換一個方向」 |
 | `#/analysis` | 03 分析：分類與切換、偵測框、編號貼文、空格、建議封存；不確定時問「這是手機還是電腦截圖？」；可以手動拖框 |
 | `#/next` | 04 下一篇拍什麼 |
 | `#/photos` | 05 整理新照片：整個主頁預覽、拖曳換位、拿掉／釘選、配樂（語言切換、試聽、偏好）、zip 下載 |
@@ -48,13 +48,15 @@ index.html              外殼與 script 載入順序（配樂入口只在第五
 css/style.css           全部樣式；審美 tokens 在 :root
 vendor/jszip.min.js     JSZip 3.10.2（本地檔）＋ vendor/jszip-LICENSE.md
 vendor/opencc-t2cn.js   opencc-js 瀏覽器版（MIT），歌手搜尋的繁簡轉換。授權見同目錄 opencc-js-LICENSE.txt、opencc-js-Apache-2.0.txt、opencc-js-THIRD_PARTY_LICENSES.md
-js/mock-data.js         6 種類型的規則、示範分析、拍攝卡
+js/mock-data.js         6 種類型的規則、示範分析、拍攝卡（步驟 2 不再顯示類型卡片，由 style-pick.js 對應）
+js/style-pick.js        步驟 2 參考圖定義、歸納方向、混搭規則、換一個方向（圖檔在 assets/style-ref/）
 js/music-library.js     內建歌單（曲風、語言、氛圍、youtubeId、itunesPreview；youtubeId 只用於外部連結）
 js/artist-aliases.js    歌單歌手的英文名與暱稱
 js/fuzzy.js             歌手／歌名模糊比對（子字串、繁簡、錯字、別名）
 js/step5.js             第五步排序核心（順序同步、待辦）
 js/step5-drag.js        第五步九宮格拖曳
-js/music.js             配樂偏好（localStorage）、照片氛圍計算、推薦計分
+js/music-mood.js        照片情緒（冷暖、明暗、節奏）＋每個曲風推一首最搭的歌（曲風、歌手選填，只做篩選）
+js/music.js             配樂偏好（localStorage）；推薦轉呼叫 music-mood.js
 js/preview.js           試聽：只播 Apple 30 秒試聽（<audio>）；沒有就給 YouTube 外部連結，不嵌入影片
 js/ai.js                AI 接口（目前回傳示範結果）← 之後在這裡接 AI
 js/grid.js              色塊九宮格、示範主頁產生器、從截圖裁出既有貼文

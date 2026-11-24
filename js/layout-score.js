@@ -94,7 +94,8 @@
     // 以 3×3（12 組相鄰）為基準換算，格子多寡不影響分數尺度
     var s = Math.round(Math.max(0, Math.min(100, 100 - total * 12 / pairs)));
     var stars = s >= 85 ? 5 : s >= 70 ? 4 : s >= 55 ? 3 : s >= 40 ? 2 : 1;
-    return { score: s, stars: stars, reason: reasonOf(top, pens, dlSum / pairs) };
+    // spots：主要原因牽涉到的相鄰格（1 起算，例如 [[4,5],[5,8]]），給「最多只能到」文案判斷是不是舊貼文造成的
+    return { score: s, stars: stars, reason: reasonOf(top, pens, dlSum / pairs), spots: top ? pens[top].slice() : [] };
   }
 
   // ===== 版面星數：一句最主要原因 =====

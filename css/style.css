@@ -555,7 +555,13 @@ input[type="range"]:hover::-webkit-slider-thumb { border-color: var(--accent); }
 .spec-top { padding-top: 16px !important; border-top: 1px solid var(--line); }
 
 /* ---------- 5. 九宮格預覽：沒有既有貼文的空位 ---------- */
-.pgrid .pc.old.none { background: var(--bg-2); opacity: .6; }
+/* 9a 修正：補齊最後一排的「空位」——淡底＋虛線框＋淡字，看得出是佔位，不是裁壞；不可拖、不可選 */
+.pgrid .pc.old.none { background: var(--bg-2); opacity: 1; cursor: default; display: flex; align-items: center; justify-content: center; }
+.pgrid .pc.old.none::before { content: ""; position: absolute; inset: 6px; border: 1px dashed rgba(43, 39, 36, .28); border-radius: 2px; pointer-events: none; }
+.pgrid .pc.old.none .pc-empty { position: relative; font-size: 12px; letter-spacing: .2em; color: var(--ink-3); pointer-events: none; }
+.phone-frame[data-theme="dark"] .pgrid .pc.old.none { background: #121212; }
+.phone-frame[data-theme="dark"] .pgrid .pc.old.none::before { border-color: rgba(246, 242, 236, .22); }
+.phone-frame[data-theme="dark"] .pgrid .pc.old.none .pc-empty { color: rgba(246, 242, 236, .45); }
 
 /* ---------- 5. 配這組照片的歌 ---------- */
 .musicbox { margin-top: 32px; padding-top: 4px; }
@@ -1012,3 +1018,41 @@ body.is-dragging { overflow: hidden; touch-action: none; }
 .auto-note { margin: 12px 0 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 14px; color: var(--ink); }
 .auto-note[hidden] { display: none; }
 .auto-note > span { min-width: 0; }
+
+/* ===== 9b：步驟 2 參考圖複選（js/style-pick.js、app.js viewStyle） ===== */
+.refview { margin-top: 24px; max-width: 560px; }
+.ref-stage { display: grid; gap: 12px; }
+.ref-img { position: relative; border: 1px solid var(--line); background: var(--surface); cursor: pointer; display: flex; justify-content: center; align-items: center; height: min(56vh, 460px); overflow: hidden; -webkit-tap-highlight-color: transparent; }
+.ref-img img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; -webkit-user-drag: none; user-select: none; pointer-events: none; }
+.ref-img.is-on { border: 2px solid var(--ink); }
+.ref-badge { position: absolute; top: 10px; right: 10px; display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; font-size: 14px; background: var(--ink); color: #fff; border-radius: 999px; }
+.ref-badge svg, .ref-like svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.ref-meta { display: grid; gap: 2px; }
+.ref-no { font-family: var(--label); font-size: 12px; letter-spacing: .15em; color: var(--ink-3); }
+.ref-name { font-family: var(--serif); font-size: 18px; letter-spacing: .06em; }
+.ref-ctl { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: 10px; align-items: center; }
+.ref-ctl .icon-btn { width: 44px; height: 44px; }
+.ref-like { min-height: 44px; font-size: 16px; display: inline-flex; justify-content: center; align-items: center; gap: 6px; }
+.ref-thumbs { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin-top: 14px; }
+.ref-th { position: relative; padding: 0; border: 1px solid var(--line); background: var(--surface); height: 56px; min-height: 44px; overflow: hidden; cursor: pointer; }
+.ref-th img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.ref-th.is-cur { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ref-th-ok { position: absolute; right: 3px; bottom: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--ink); color: #fff; display: none; align-items: center; justify-content: center; }
+.ref-th-ok svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.ref-th[aria-pressed="true"] .ref-th-ok { display: flex; }
+.ref-foot { margin-top: 20px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; max-width: 560px; }
+.ref-count { font-size: 14px; color: var(--ink-2); min-width: 0; }
+.ref-foot .btn[disabled] { opacity: .4; cursor: not-allowed; }
+@media (max-width: 879px) { .ref-foot .btn { width: 100%; } }
+/* 目前方向＋「換一個方向」（步驟 2 頂部、步驟 3 標題下） */
+.dir-bar { margin-top: 16px; padding: 12px 14px; border: 1px solid var(--line); background: var(--surface); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.dir-txt { min-width: 0; flex: 1 1 220px; }
+.dir-txt .section-label { margin: 0; }
+.dir-name { font-family: var(--serif); font-size: 17px; letter-spacing: .04em; margin-top: 2px; }
+.dir-sub, .dir-mix { margin-top: 2px; overflow-wrap: anywhere; }
+.dir-next { min-height: 44px; }
+
+/* ===== 9b：配樂依照片情緒、每個曲風一首（js/music-mood.js） ===== */
+.song-gh { font-size: 12.5px; letter-spacing: .12em; color: var(--accent-ink); margin-bottom: 2px; }
+.mb-filter { margin-top: 12px; }
+.mb-none { margin-top: 12px; font-size: 14px; color: var(--ink-2); }

@@ -17,7 +17,7 @@
 
   var ROUTES = ['', 'upload', 'style', 'analysis', 'next', 'photos'];
   var EXTRA = ['music'];
-  var STEP_NAME = { upload: '上傳主頁', style: '選類型', analysis: '分析', next: '下一篇', photos: '整理照片' };
+  var STEP_NAME = { upload: '上傳主頁', style: '選喜歡的樣子', analysis: '分析', next: '下一篇', photos: '整理照片' };
 
   var state = {
     shot: null,          // { url, width, height, name, isDemo, det, grid, srcId, chosen, ms }
@@ -27,6 +27,9 @@
     debugDelay: 0,       // 截圖腳本用：人為延遲偵測，才拍得到讀取狀態
     frameEdit: null,     // 手動拖框中：{ x, y, w, h, ratio }（原圖像素）
     styleId: null,
+    refSel: [], refIdx: 0, // 步驟 2：已選的參考圖 id（依選取順序）、正在看的那張（js/style-pick.js）
+    stylePick: null,     // 步驟 2 歸納結果 { refs, scores, directions, dirIndex }
+    styleMix: null,      // 目前方向的混搭規則 { main, accent, bridge:'bw', ratio:{main:.7,accent:.3} }；單一溫度為 null
     analysis: null, analysisKey: null,
     shots: null, shotsKey: null, shotIndex: 0,
     photos: [], cur: null,
@@ -181,7 +184,7 @@
         '</section>' +
         '<ol class="steps3 stg">' +
           step3('01', I.upload, '上傳主頁', '一張主頁截圖就好，照片不會離開你的手機。') +
-          step3('02', I.style, '選想走的樣子', '六種帳號類型，各有一套看得見的排版規則。') +
+          step3('02', I.style, '選喜歡的樣子', '滑過幾張參考主頁，喜歡的點一下，方向由我來歸納。') +
           step3('03', I.tips, '拿到建議', '哪幾張先封存、下一篇怎麼拍，再把新照片修成一致。') +
         '</ol>' +
       '</div>';
@@ -316,7 +319,7 @@
         '</div>' +
         askKindHTML(s) +
         '<p class="privacy">' + I.device + '照片只在你的裝置上處理，不會上傳。</p>' +
-        '<div class="actions mt-32"><button class="btn btn-block" type="button" id="toStyle">下一步：選類型 ' + I.arrow + '</button></div>';
+        '<div class="actions mt-32"><button class="btn btn-block" type="button" id="toStyle">下一步：選喜歡的樣子 ' + I.arrow + '</button></div>';
       var inp = document.getElementById('shotInput');
       inp.addEventListener('change', function () { if (inp.files[0]) readShot(inp.files[0]); });
       document.getElementById('replaceLbl').addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inp.click(); } });
@@ -468,64 +471,129 @@
   }
 
   /* =========================================================
-     2. 選類型
+     2. 選喜歡的樣子（9b：參考圖一張一張看、可複選；歸納規則在 js/style-pick.js）
      ========================================================= */
+  // ===== 步驟 2：參考圖瀏覽器（大圖一張＋上一張／下一張＋「喜歡這張」切換＋縮圖列） =====
   function viewStyle() {
-    var cards = STYLES.map(function (s, i) {
-      var on = s.id === state.styleId;
-      return '<button class="card" type="button" data-id="' + s.id + '" aria-pressed="' + on + '">' +
-        Grid.gridHTML(Grid.MINI[s.id]) +
-        '<span class="check">' + I.check + '</span>' +
-        '<span><span class="c-no">類型 ' + pad2(i + 1) + '</span>' +
-        '<span class="c-name" style="display:block">' + s.name + '</span>' +
-        '<span class="c-tag" style="display:block">' + s.tagline + '</span></span>' +
-      '</button>';
-    }).join('');
+    var SP = window.StylePick, refs = SP.REFS;
+    var idx = clamp(state.refIdx || 0, 0, refs.length - 1);
+    var sel = state.refSel;
+    var cur = SP.current(state.stylePick);
     $main.innerHTML =
       '<div class="wrap screen">' +
         '<div class="stg">' +
-          '<span class="eyebrow">步驟 02 — 方向</span>' +
-          '<h1 class="h1">你想讓主頁，<br>走哪一種樣子？</h1>' +
-          '<p class="lead">每一種類型都有自己的排版規則。選一個最接近的目標就好，混合也沒關係，我會以它為主來看你的主頁。</p>' +
+          '<span class="eyebrow">步驟 02 — 喜歡的樣子</span>' +
+          '<h1 class="h1">滑過這幾種主頁，<br>喜歡的就點一下。</h1>' +
+          '<p class="lead">可以選很多張，不用想它叫什麼風格。選完我會自己歸納方向、直接套用。</p>' +
         '</div>' +
-        '<div class="style-layout">' +
-          '<div class="cards stg" role="group" aria-label="帳號類型">' + cards + '</div>' +
-          '<aside class="stg" id="rulesBox"></aside>' +
+        (cur ? '<div class="dir-bar stg" id="dirBarStyle">' + dirBarInner(cur) + '</div>' : '') +
+        '<section class="refview stg" id="refView" aria-label="參考主頁">' +
+          '<div class="ref-stage" id="refStage"></div>' +
+          '<div class="ref-thumbs" role="group" aria-label="六張參考圖">' + refs.map(function (r, i) {
+            return '<button type="button" class="ref-th" data-ri="' + i + '" aria-label="看第 ' + (i + 1) + ' 張：' + r.name + '">' +
+              '<img src="' + r.file + '" alt="" loading="lazy" draggable="false"><span class="ref-th-ok">' + I.check + '</span></button>';
+          }).join('') + '</div>' +
+        '</section>' +
+        '<div class="ref-foot stg">' +
+          '<p class="ref-count" id="refCount" role="status"></p>' +
+          '<button class="btn" type="button" id="useRefs">用這些喜好 ' + I.arrow + '</button>' +
         '</div>' +
       '</div>';
-    qsa('.card', $main).forEach(function (b) {
-      b.addEventListener('click', function () {
-        state.styleId = b.getAttribute('data-id');
-        qsa('.card', $main).forEach(function (x) { x.setAttribute('aria-pressed', String(x === b)); });
-        renderRules(true);
-        if (window.innerWidth < 880) {
-          var box = document.getElementById('rulesBox');
-          setTimeout(function () { box.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' }); }, 60);
-        }
+    function paint() {
+      var r = refs[idx], on = sel.indexOf(r.id) >= 0;
+      document.getElementById('refStage').innerHTML =
+        '<div class="ref-img' + (on ? ' is-on' : '') + '">' +
+          '<img src="' + r.file + '" alt="參考主頁 ' + r.id + '：' + r.desc + '" draggable="false">' +
+          (on ? '<span class="ref-badge">' + I.check + '已選</span>' : '') +
+        '</div>' +
+        '<div class="ref-meta">' +
+          '<span class="ref-no">' + r.id + ' / ' + pad2(refs.length) + '</span>' +
+          '<p class="ref-name">' + r.name + '</p><p class="ref-desc small">' + r.desc + '</p>' +
+        '</div>' +
+        '<div class="ref-ctl">' +
+          '<button type="button" class="icon-btn ref-nav" id="refPrev" aria-label="上一張">' + I.left + '</button>' +
+          '<button type="button" class="pill ref-like" id="refLike" aria-pressed="' + on + '">' + (on ? I.check + '已選' : '喜歡這張') + '</button>' +
+          '<button type="button" class="icon-btn ref-nav" id="refNext" aria-label="下一張">' + I.right + '</button>' +
+        '</div>';
+      qsa('.ref-th', $main).forEach(function (b, i) {
+        b.classList.toggle('is-cur', i === idx);
+        b.setAttribute('aria-pressed', String(sel.indexOf(refs[i].id) >= 0));
       });
+      var n = sel.length;
+      document.getElementById('refCount').textContent = n ? '已選 ' + n + ' 張：' + sel.join('、') : '至少選 1 張才能繼續';
+      var use = document.getElementById('useRefs');
+      use.disabled = !n;
+      use.setAttribute('aria-disabled', String(!n));
+      document.getElementById('refPrev').addEventListener('click', function () { move(-1); });
+      document.getElementById('refNext').addEventListener('click', function () { move(1); });
+      document.getElementById('refLike').addEventListener('click', toggle);
+      document.querySelector('#refStage .ref-img').addEventListener('click', toggle);
+      bindSwipe(document.querySelector('#refStage .ref-img'));
+    }
+    function move(d) { idx = (idx + d + refs.length) % refs.length; state.refIdx = idx; paint(); }
+    function toggle() {
+      var id = refs[idx].id, k = sel.indexOf(id);
+      if (k >= 0) sel.splice(k, 1); else sel.push(id);
+      paint();
+    }
+    // 左右滑動換張（點一下＝選取，滑動不算點）
+    function bindSwipe(el) {
+      var sx = null, sy = 0;
+      el.addEventListener('touchstart', function (e) { sx = e.touches[0].clientX; sy = e.touches[0].clientY; }, { passive: true });
+      el.addEventListener('touchend', function (e) {
+        if (sx === null) return;
+        var t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy; sx = null;
+        if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) { e.preventDefault(); move(dx < 0 ? 1 : -1); }
+      });
+    }
+    qsa('.ref-th', $main).forEach(function (b) {
+      b.addEventListener('click', function () { idx = Number(b.getAttribute('data-ri')); state.refIdx = idx; paint(); });
     });
-    renderRules(false);
+    $main.querySelector('#refView').addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowLeft') { e.preventDefault(); move(-1); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); move(1); }
+    });
+    document.getElementById('useRefs').addEventListener('click', function () {
+      if (!sel.length) { toast('至少選 1 張喜歡的'); return; }
+      applyStylePick();
+    });
+    bindDirBar($main);
+    paint();
   }
 
-  function renderRules(animate) {
-    var box = document.getElementById('rulesBox');
-    var s = styleById(state.styleId);
-    if (!s) {
-      box.innerHTML = '<div class="rules"><p class="rules-empty">點一張卡片，這裡會顯示該類型的排版重點。</p></div>' +
-        '<div class="style-foot"><button class="btn" type="button" disabled>下一步：開始分析 ' + I.arrow + '</button></div>';
-      return;
-    }
-    box.innerHTML =
-      '<div class="rules' + (animate ? ' fade-swap' : '') + '">' +
-        '<span class="section-label">排版規則</span>' +
-        '<h3>' + s.name + '的排版重點</h3>' +
-        '<ol>' + s.rules.map(function (r, i) {
-          return '<li><span class="n">' + pad2(i + 1) + '</span><span>' + r + '</span></li>';
-        }).join('') + '</ol>' +
-        '<p class="cad">發文節奏：' + s.cadence + '</p>' +
+  // ===== 步驟 2 → 3：歸納並直接套用（不追問），寫進 state.stylePick／state.styleId =====
+  function applyStylePick() {
+    var pick = window.StylePick.summarize(state.refSel);
+    if (!pick) return;
+    state.stylePick = pick;
+    useDirection(window.StylePick.current(pick));
+    go('analysis');
+  }
+  function useDirection(d) {
+    if (!d) return;
+    state.styleId = d.styleId;
+    state.styleMix = d.mix; // 混搭規則（七成主色／三成點綴／黑白過渡）；之後用到色調就用這組，不再問
+    state.shots = null; state.shotsKey = null; // 下一篇要依新方向重想
+  }
+
+  // ===== 「換一個方向」：同一組選取，換下一個方向並重跑分析（步驟 2、步驟 3 都有） =====
+  function dirBarInner(d) {
+    var SP = window.StylePick, pick = state.stylePick;
+    return '<div class="dir-txt"><span class="section-label">目前方向</span>' +
+        '<p class="dir-name" id="dirName">' + esc(d.name) + '</p>' +
+        '<p class="small dir-sub">依你選的 ' + pick.refs.map(function (id) { return esc(SP.refById(id).name); }).join('、') + '</p>' +
+        (d.mix ? '<p class="small dir-mix" id="dirMix" data-main="' + d.mix.main + '" data-accent="' + d.mix.accent + '">混搭：' + esc(d.mixText) + '。</p>' : '') +
       '</div>' +
-      '<div class="style-foot"><button class="btn" type="button" id="toAnalysis">下一步：開始分析 ' + I.arrow + '</button></div>';
-    document.getElementById('toAnalysis').addEventListener('click', function () { go('analysis'); });
+      '<button class="link swap dir-next" type="button" id="nextDir">' + I.swap + '換一個方向</button>';
+  }
+  function bindDirBar(root) {
+    var b = qs('#nextDir', root);
+    if (!b) return;
+    b.addEventListener('click', function () {
+      useDirection(window.StylePick.nextDirection(state.stylePick));
+      toast('換成：' + window.StylePick.current(state.stylePick).name);
+      if (currentRoute() === 'analysis') viewAnalysis(); else go('analysis');
+    });
   }
 
   /* =========================================================
@@ -539,10 +607,10 @@
   function viewAnalysis() {
     $main.innerHTML = loadingHTML('正在讀你的主頁…', '找出貼文區 · 色調 · 留白 · 節奏');
     ensureShot().then(function () {
-      var key = state.styleId + '|' + state.shot.url;
+      var key = state.styleId + '|' + state.shot.url + '|' + (state.styleMix ? state.styleMix.main : ''); // 換方向（含主色）就重跑
       if (state.analysisKey === key && state.analysis) { drawAnalysis(); stagger(); return; }
       AI.analyzeProfile(state.shot, state.styleId).then(function (res) {
-        if (currentRoute() !== 'analysis' || state.styleId + '|' + state.shot.url !== key) return;
+        if (currentRoute() !== 'analysis' || state.styleId + '|' + state.shot.url + '|' + (state.styleMix ? state.styleMix.main : '') !== key) return;
         state.analysis = res; state.analysisKey = key;
         state.shots = null; state.shotsKey = null;
         drawAnalysis();
@@ -567,6 +635,7 @@
             '<h1 class="h1 mt-16">' + analysisVerdict(a) + '</h1>' +
             '<p class="summary">' + a.summary + '</p>' +
             '<div class="an-foot an-foot-top"><button class="btn" type="button" id="toNextTop">看下一篇拍什麼 ' + I.arrow + '</button></div>' +
+            (window.StylePick && state.stylePick ? '<div class="dir-bar" id="dirBar">' + dirBarInner(window.StylePick.current(state.stylePick)) + '</div>' : '') +
           '</div>' +
           '<div class="an-left stg" id="anLeft"></div>' +
           '<div class="an-body">' +
@@ -600,6 +669,7 @@
     });
     document.getElementById('toNext').addEventListener('click', function () { go('next'); });
     document.getElementById('toNextTop').addEventListener('click', function () { go('next'); });
+    bindDirBar($main);
   }
 
   // 步驟 3 標題：先講結論與要做的動作（有建議收起的格子就直接說第幾格）
@@ -865,7 +935,7 @@
           '<h1 class="h1 mt-16" id="nextTitle">下一篇拍這個：' + sc.theme + '</h1>' +
         '</div>' +
         '<article class="shotcard stg" id="shotCard">' + shotCardInner(sc, i, list.length) + '</article>' +
-        '<p class="lead stg">依你選的「' + s.name + '」與剛才的分析，挑一張最能讓主頁變安靜的照片。</p>' +
+        '<p class="lead stg">依你喜歡的「' + (state.stylePick ? esc(window.StylePick.current(state.stylePick).name) : s.name) + '」方向與剛才的分析，挑一張最能讓主頁變安靜的照片。</p>' +
         '<div class="sc-tools stg">' +
           '<div class="dots" aria-hidden="true">' + list.map(function (_, k) { return '<i class="' + (k === i ? 'on' : '') + '"></i>'; }).join('') + '</div>' +
           '<div class="actions">' +
@@ -1427,6 +1497,9 @@
     }
   }
 
+  // ===== 第 5 步：補齊用的空位格（9a 修正：加「空位」標示，樣式見 css/style.css「空位」區段） =====
+  var EMPTY_CELL = '<div class="pc old none" title="空位，還沒有貼文"><span class="pc-empty">空位</span></div>';
+
   // ===== 第 5 步：九宮格預覽重畫（只動 #pgrid；opts.keepMusic 時連配樂區也不碰） =====
   function drawGridPreview(opts) {
     var g = document.getElementById('pgrid');
@@ -1468,8 +1541,9 @@
         pinBtn + unpin +
         '<button class="pc-rm" type="button" data-arch="' + it.k + '" aria-label="暫時拿掉原第 ' + (it.k + 1) + ' 格（不會刪除）"><span>拿掉</span></button></div>';
     }).join('');
-    while ((order.length % 3) !== 0) { html += '<div class="pc old none"></div>'; order = order.concat([{ t: 'x' }]); }
-    if (!html) html = '<div class="pc old none"></div><div class="pc old none"></div><div class="pc old none"></div>';
+    // ----- 9a 修正：最後一排補齊 3 欄的空位（IG 是 3 欄）。只是佔位：不可拖、不可點選互換、沒有「拿掉」 -----
+    while ((order.length % 3) !== 0) { html += EMPTY_CELL; order = order.concat([{ t: 'x' }]); }
+    if (!html) html = EMPTY_CELL + EMPTY_CELL + EMPTY_CELL;
     g.innerHTML = html;
     var cap = document.getElementById('movedCaption');
     if (!cap) {
@@ -1518,7 +1592,11 @@
     if (!box || !window.Step5.showScore) return;
     var src = scoreSources();
     var cells = src.cells, waiting = src.waiting;
-    var out = window.Step5.showScore(box, cells, withCompare ? state.layoutScore : null);
+    // 9a 修正：畫面是自動推薦版（沒手動動過）時，星數＝這組照片能排到的上限 → 文案改「最多只能到 X 顆」
+    var A = state.auto || {};
+    var ceiling = !!(A.applied && !A.manual && !withCompare);
+    var fixed = ensureOrder().map(function (it) { return it.t !== 'n'; });
+    var out = window.Step5.showScore(box, cells, withCompare ? state.layoutScore : null, { ceiling: ceiling, fixed: fixed });
     if (!out) return;
     state.layoutScore = out.result;
     // 舊貼文圖片還沒載好：等載好再補算一次（不帶比較）
@@ -1762,11 +1840,19 @@
   }
 
 
+  // 9b：一律先依照片情緒推「每個曲風一首」（js/music-mood.js）；曲風、歌手是選填，只做篩選
+  function filterLine(prefs) {
+    var bits = [];
+    if (prefs.genres.length) bits.push('只看 ' + prefs.genres.join('、'));
+    if (prefs.artists.length) bits.push('優先 ' + prefs.artists.join('、'));
+    return bits.length ? '篩選：' + bits.join('；') + '。' : '沒有篩選：十個曲風各挑一首。';
+  }
   function renderMusicBox() {
     var box = document.getElementById('musicBox');
     if (!box) return;
     if (Preview) Preview.stop();
-    var prefs = Music.load();
+    var saved = Music.load();
+    var prefs = saved || Music.empty();
     var mood = currentMood();
     var lang = musicLang();
     state.music.lang = lang;
@@ -1776,37 +1862,27 @@
         '<button type="button" data-lang="zh" aria-pressed="' + (lang === 'zh') + '">中文</button>' +
         '<button type="button" data-lang="en" aria-pressed="' + (lang === 'en') + '">英文</button>' +
       '</div>';
-    if (!Music.hasPrefs(prefs)) {
-      box.innerHTML =
-        '<div class="mb-hero">' +
-          '<span class="section-label">配樂</span>' +
-          '<h2 class="h2 song-h">配一首歌</h2>' +
-          '<p class="lead">先在這裡告訴我你喜歡聽什麼。建好之後，推薦、試聽和語言切換都留在這一步，不用再跳頁。</p>' +
-          (mood ? '<p class="mood" id="moodLine">' + moodHTML(mood) + '</p>' : '') +
-          langSeg +
-        '</div>' +
-        '<div id="setupHost"></div>';
-      bindLangSeg(box);
-      renderInlineSetup(document.getElementById('setupHost'));
-      return;
-    }
     var M = state.music;
     if (!M.recs) M.recs = Music.recommend(prefs, mood, { seed: M.seed, avoid: M.avoid, lang: lang });
     var genreNote = Music.genreConflict(prefs, lang); // 曲風與語言衝突提示（js/music-filter.js）
+    var filtered = Music.hasPrefs(saved);
     box.innerHTML =
       '<div class="mb-hero">' +
         '<span class="section-label">配樂</span>' +
         '<h2 class="h2 song-h">配一首歌</h2>' +
-        '<p class="lead">依這組照片的氛圍挑 3 首。試聽是 Apple 的 30 秒聲音，頁面裡沒有影片。</p>' +
+        '<p class="lead" id="mbLead">依你這組照片的情緒（冷暖、明暗、節奏），每個曲風挑一首最搭的歌，同一個氛圍、不同曲風的版本。試聽是 Apple 的 30 秒聲音，頁面裡沒有影片。</p>' +
         (mood ? '<p class="mood" id="moodLine">' + moodHTML(mood) + '</p>' : '') +
+        '<p class="small mb-filter" id="mbFilter">' + esc(filterLine(prefs)) + '</p>' +
         langSeg +
         (genreNote ? '<p class="mf-hint" id="genreNote" role="note">' + esc(genreNote) + '</p>' : '') +
       '</div>' +
-      '<ol class="songs">' + M.recs.map(function (r, k) {
+      (M.recs.length ? '' : '<p class="mb-none" id="mbEmpty">這個語言沒有符合篩選的歌。</p>') +
+      '<ol class="songs" data-mode="per-genre">' + M.recs.map(function (r, k) {
         var liked = prefs.likes.indexOf(r.id) >= 0;
-        return '<li class="song" data-id="' + r.id + '">' +
+        return '<li class="song" data-id="' + r.id + '" data-genre="' + esc(r.genre) + '">' +
           '<span class="song-no">' + pad2(k + 1) + '</span>' +
           '<div class="song-body">' +
+            '<p class="song-gh">' + esc(r.genre) + '・最搭的一首</p>' +
             '<div class="song-top"><div><p class="song-t">' + esc(r.title) + '</p>' +
             '<p class="song-a">' + esc(r.artist) + ' · <span class="song-g" data-genre="' + esc(r.genre) + '">' + esc(r.genre) + '</span>' +
               (r.near ? ' <span class="song-near">相近推薦</span>' : '') + '</p></div></div>' +
@@ -1822,7 +1898,7 @@
       }).join('') + '</ol>' +
       '<div class="mb-foot">' +
         '<button class="link swap" type="button" id="moreSongs">' + I.swap + '換一組</button>' +
-        '<button class="link muted" type="button" id="openPrefs">調整我的配樂偏好</button>' +
+        '<button class="link muted" type="button" id="openPrefs">' + (filtered ? '調整曲風／歌手篩選（選填）' : '篩選曲風或歌手（選填）') + '</button>' +
       '</div>' +
       '<div id="prefHost" hidden></div>' +
       '<p class="small mt-8">' + I.note.replace('<svg', '<svg class="ic-inline"') + '請到 IG App 加音樂時搜尋這首歌。留格不會把歌放進 IG。</p>' +
@@ -1834,7 +1910,7 @@
         var i = p.likes.indexOf(id);
         if (i >= 0) p.likes.splice(i, 1); else { p.likes.push(id); p.dislikes = p.dislikes.filter(function (x) { return x !== id; }); }
         Music.save(p);
-        toast(i >= 0 ? '已取消喜歡' : '記住了：之後多推同曲風的歌');
+        toast(i >= 0 ? '已取消喜歡' : '記住了：同分時優先推這首');
         // 只更新這顆按鈕，不重畫（正在試聽的歌不會被打斷）
         b.setAttribute('aria-pressed', String(i < 0)); b.textContent = i < 0 ? '已喜歡' : '喜歡';
       });
@@ -1845,40 +1921,48 @@
         if (p.dislikes.indexOf(id) < 0) p.dislikes.push(id);
         p.likes = p.likes.filter(function (x) { return x !== id; });
         Music.save(p);
-        // 只換掉這一首，其他兩首不動
-        var keep = M.recs.filter(function (r) { return r.id !== id; });
-        var fresh = Music.recommend(p, currentMood(), { seed: M.seed, avoid: M.avoid.concat(M.recs.map(function (r) { return r.id; })), lang: musicLang() })
-          .filter(function (r) { return !keep.some(function (k) { return k.id === r.id || k.artist === r.artist; }); });
-        var idx = M.recs.map(function (r) { return r.id; }).indexOf(id);
+        // 只換掉這個曲風的那一首（換成同曲風下一首最搭的），其他曲風不動
+        var ids = M.recs.map(function (r) { return r.id; }), idx = ids.indexOf(id);
+        var g = M.recs[idx] && M.recs[idx].genre;
+        var fresh = Music.recommend(p, currentMood(), { seed: M.seed, avoid: M.avoid.concat(ids), current: ids, lang: musicLang(), genres: [g] });
         M.recs = M.recs.slice();
-        if (fresh[0]) M.recs.splice(idx, 1, fresh[0]); else M.recs.splice(idx, 1);
-        toast('不會再推這首，同一位歌手也會少推');
+        if (fresh[0] && ids.indexOf(fresh[0].id) < 0) M.recs.splice(idx, 1, fresh[0]); else M.recs.splice(idx, 1);
+        toast('不會再推這首');
         renderMusicBox();
       });
     });
     // 試聽：先查好 Apple previewUrl（只查不播），點播放鍵時才能在同一個點擊裡直接播放（iPhone Safari）
-    var recSongs = M.recs.map(function (r) { return Music.byId(r.id); }).filter(Boolean);
+    // 9b：一次會列到十個曲風，只預查前 3 首，避免 Apple 查詢太密被擋（403）；其餘在按播放時才查（preview.js 會先解鎖 <audio>）
+    var recSongs = M.recs.slice(0, 3).map(function (r) { return Music.byId(r.id); }).filter(Boolean);
     if (Preview) {
       Preview.prefetch(recSongs);
       qsa('[data-play]', box).forEach(function (el) { Preview.mount(el, Music.byId(el.getAttribute('data-play'))); });
     }
+    // 換一組：每個曲風換下一首「還沒推過」的最搭歌曲（js/music-mood.js）
     document.getElementById('moreSongs').addEventListener('click', function () {
-      M.avoid = M.avoid.concat(M.recs.map(function (r) { return r.id; })).slice(-36);
-      M.seed++; M.recs = null;
+      var ids = M.recs.map(function (r) { return r.id; });
+      M.avoid = M.avoid.concat(ids).slice(-300);
+      M.seed++;
+      M.recs = Music.recommend(Music.load() || Music.empty(), currentMood(), { seed: M.seed, avoid: M.avoid, current: ids, lang: musicLang() });
       renderMusicBox();
       var l = qs('.songs', box); if (l) { l.classList.remove('fade-swap'); void l.offsetWidth; l.classList.add('fade-swap'); }
     });
     bindLangSeg(box);
+    // 篩選（選填）：沒存過偏好 → 內嵌建立；存過 → 偏好面板
+    function openFilter(host) {
+      host.hidden = false;
+      if (Music.hasPrefs(Music.load())) renderPrefs(host, Music.load());
+      else renderInlineSetup(host);
+    }
     var open = document.getElementById('openPrefs');
     if (open) open.addEventListener('click', function () {
       var host = document.getElementById('prefHost');
       if (!host) return;
-      host.hidden = !host.hidden;
-      if (!host.hidden) renderPrefs(host, Music.load() || prefs);
+      if (host.hidden) openFilter(host); else host.hidden = true;
     });
     if (state.music.focus) {
       var host0 = document.getElementById('prefHost');
-      if (host0) { host0.hidden = false; renderPrefs(host0, prefs); }
+      if (host0) openFilter(host0);
     }
   }
 
@@ -2069,7 +2153,7 @@
     var p = Music.load() || Music.empty();
     Object.keys(fields).forEach(function (k) { p[k] = fields[k]; });
     Music.save(p);
-    state.music.draft = null; state.music.taste = null; state.music.recs = null;
+    state.music.draft = null; state.music.taste = null; state.music.recs = null; state.music.focus = false;
     toast(msg || '已儲存配樂偏好');
     if (currentRoute() === 'photos') { renderMusicBox(); return; }
     state.music.focus = true;
@@ -2079,18 +2163,19 @@
   function renderGenreTab() {
     var d = state.music.draft, body = document.getElementById('tabBody');
     body.innerHTML =
-      '<span class="field-label">曲風（可複選）</span>' +
+      '<span class="field-label">想篩選的曲風（選填，可複選）</span>' +
       genreChips(d.genres, 'setup') +
-      '<span class="field-label mt-32">喜歡的歌手（可不填）</span>' +
+      '<span class="field-label mt-32">喜歡的歌手（選填）</span>' +
       tagInputHTML(d.artists, 'artistIn') +
       '<p class="small mt-8">例如：陳綺貞、宇多田光、Norah Jones。</p>' +
-      '<div class="actions mt-32"><button class="btn" type="button" id="saveGenre">儲存偏好 ' + I.arrow + '</button></div>';
+      '<p class="small mt-8">都不填也可以：會依照片情緒，十個曲風各推一首。</p>' +
+      '<div class="actions mt-32"><button class="btn" type="button" id="saveGenre">套用篩選 ' + I.arrow + '</button></div>';
     bindGenreChips(body, d.genres);
     bindTagInput('artistIn', d.artists, renderGenreTab);
     document.getElementById('saveGenre').addEventListener('click', function () {
       var inp = qs('#artistIn input'); if (inp.value.trim()) { d.artists.push(inp.value.trim()); }
-      if (!d.genres.length && !d.artists.length) { toast('至少選一種曲風，或填一位歌手'); return; }
-      finishSetup({ genres: d.genres.slice(), artists: d.artists.slice() });
+      // 9b：曲風、歌手都是選填，不再擋（都沒填＝不篩選）
+      finishSetup({ genres: d.genres.slice(), artists: d.artists.slice() }, d.genres.length || d.artists.length ? '已套用篩選' : '不篩選：每個曲風各一首');
     });
   }
 
@@ -2164,8 +2249,7 @@
       '</div>';
     bindGenreChips(box, t.genres);
     document.getElementById('saveTaste').addEventListener('click', function () {
-      if (!t.genres.length) { toast('至少留一種曲風'); return; }
-      onSave(t);
+      onSave(t); // 9b：曲風選填，可全部取消
     });
   }
 
@@ -2179,8 +2263,8 @@
       '<div class="settings pref-panel">' +
         '<p class="small">勾曲風、歌手、喜歡的歌、喜歡與不喜歡，都存在這台裝置。</p>' +
         '<div class="actions"><button class="link muted" type="button" id="clearMusic">清除偏好</button></div>' +
-        '<section><span class="section-label">曲風</span>' + genreChips(prefs.genres, 'set') + '</section>' +
-        '<section><span class="section-label">喜歡的歌手</span>' + tagInputHTML(prefs.artists, 'setArtists') +
+        '<section><span class="section-label">想篩選的曲風（選填）</span>' + genreChips(prefs.genres, 'set') + '</section>' +
+        '<section><span class="section-label">喜歡的歌手（選填）</span>' + tagInputHTML(prefs.artists, 'setArtists') +
           '<p class="small mt-8">輸入時會列出建議。重複的歌手不會再加一次。</p></section>' +
         '<section><span class="section-label">喜歡的歌</span>' +
           (prefs.songs.length ? '<ul class="songlist">' + prefs.songs.map(function (s, i) {
@@ -2332,7 +2416,13 @@
     orderKeys: function () {
       return ensureOrder().map(function (it) { return it.t === 'n' ? 'n:' + it.id : 'o:' + it.k; });
     },
-    pinList: pinList
+    pinList: pinList,
+    mood: function () { return currentMood(); }, // 9b：給 verify-r9b 比對「每個曲風最貼合照片情緒」
+    // 9a 修正：給 verify-r5 比對「目前順序是不是最高分」—— 回傳目前順序與每格 { l, h, s }（同 autoArrange 用的取樣）
+    layoutStats: function () {
+      var src = scoreSources();
+      return { order: ensureOrder().slice(), stats: src.cells.map(function (c) { return window.LayoutScore ? window.LayoutScore.measure(c) : null; }) };
+    }
   };
 
   restoreShot(); // 重新整理後：從 sessionStorage 還原縮小的截圖（有的話）

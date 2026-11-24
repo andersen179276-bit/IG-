@@ -1,6 +1,6 @@
 /* 留格 — 配樂曲風硬篩選（第五輪修 bug 第 7 節）
  * 選了曲風時先用 song.g 篩；華語類曲風同時鎖 lang='zh'。
- * 符合的湊不滿 3 首，才由 music.js 從 loose 補位並標「相近推薦」。
+ * 9b 起：js/music-mood.js 只用 strict（每個所選曲風各一首），不再從 loose 補位或標「相近推薦」。
  * 對外：window.MusicFilter = { isZhGenre, split, conflict }
  */
 (function () {
@@ -50,7 +50,7 @@
     var langName = lang === 'zh' ? '中文' : '英文';
     var all = bad.length === genres.length;
     return '你選的「' + bad.join('、') + '」沒有' + langName + '歌' +
-      (all ? '，以下是' + langName + '的相近推薦；想聽原曲風請把語言切回「全部」。' : '，這部分先略過。');
+      (all ? '，所以這裡沒有推薦；想聽請把語言切回「全部」，或拿掉曲風篩選。' : '，這部分先略過。');
   }
 
   window.MusicFilter = { isZhGenre: isZhGenre, split: split, conflict: conflict };
