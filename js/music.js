@@ -126,27 +126,36 @@
     opts = opts || {};
     var avoid = opts.avoid || [];
     var lang = opts.lang === 'zh' || opts.lang === 'en' ? opts.lang : '';
-    var list = LIB.SONGS.filter(function (s) {
+    var base = LIB.SONGS.filter(function (s) {
       if (prefs.dislikes.indexOf(s.id) >= 0) return false;
       if (lang && s.lang !== lang) return false;
       return true;
-    })
-      .map(function (s) { var r = score(s, prefs, mood, opts.seed || 0); return { s: s, sc: r.sc - (avoid.indexOf(s.id) >= 0 ? 6 : 0), why: r.why }; })
-      .sort(function (a, b) { return b.sc - a.sc; });
-    var out = [], artists = {};
-    for (var i = 0; i < list.length && out.length < 3; i++) {
-      var k = norm(list[i].s.a);
-      if (artists[k]) continue; // 同一組不重複歌手
-      artists[k] = 1;
-      out.push(list[i]);
+    });
+    var parts = window.MusicFilter.split(base, prefs, LIB.SONGS); // 曲風硬篩選（js/music-filter.js）
+    function rank(arr) {
+      return arr.map(function (s) { var r = score(s, prefs, mood, opts.seed || 0); return { s: s, sc: r.sc - (avoid.indexOf(s.id) >= 0 ? 6 : 0), why: r.why }; })
+        .sort(function (a, b) { return b.sc - a.sc; });
     }
+    var out = [], artists = {};
+    function take(list, near) {
+      for (var i = 0; i < list.length && out.length < 3; i++) {
+        var k = norm(list[i].s.a);
+        if (artists[k]) continue; // 同一組不重複歌手
+        artists[k] = 1;
+        list[i].near = near;
+        out.push(list[i]);
+      }
+    }
+    take(rank(parts.strict), false);
+    if (out.length < 3) take(rank(parts.loose), true); // 湊不滿才放寬
     return out.map(function (x) {
       var s = x.s;
       return {
         id: s.id, title: s.t, artist: s.a, genre: s.g, part: s.part,
         partWhy: PART_WHY[s.part],
         why: (x.why.length ? x.why.join('、') + '。' : '') + moodWhy(s, mood),
-        liked: prefs.likes.indexOf(s.id) >= 0
+        liked: prefs.likes.indexOf(s.id) >= 0,
+        near: !!x.near
       };
     });
   }
@@ -182,6 +191,6 @@
 
   window.Music = {
     KEY: KEY, empty: empty, load: load, save: save, clear: clear, hasPrefs: hasPrefs,
-    moodOf: moodOf, recommend: recommend, guessTaste: guessTaste, byId: byId, norm: norm
+    moodOf: moodOf, recommend: recommend, genreConflict: function (p, l) { return window.MusicFilter.conflict(p, l, LIB.SONGS); }, guessTaste: guessTaste, byId: byId, norm: norm
   };
 })();

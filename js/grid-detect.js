@@ -13,12 +13,13 @@
  *   GridDetect.fromFrame(result, frame, ratio)   → Result（使用者手動拖框後重算）
  *   GridDetect.pickArchive(result)               → [{ cell, no, reason }]（依貼文數決定 0／1／2 格）
  *   GridDetect.archiveCount(posts)               → 0 | 1 | 2
+ *   GridDetect.usableCell(cell)                  → 可以裁成舊貼文縮圖嗎（有貼文、可見 ≥ 60%、不像導覽列碎片）
  *
  * Result（座標都是原圖像素）：
  *   { ok, confidence, mode:'auto'|'manual', theme:'light'|'dark',
  *     kind:'phone'|'desktop'（實際用的偵測）, cls:{ kind:'phone'|'desktop'|'ipad'|'uncertain', … }（自動分類）,
  *     box:{x,y,w,h}, cols:3, colW, cellH, gap, ratio:'3:4'|'4:5'|'1:1', ratioGuessed,
- *     rows, posts, cells:[{ i,row,col,x,y,w,h,visible,hasPost,postNo,stats }],
+ *     rows, posts, cells:[{ i,row,col,x,y,w,h,visible,hasPost,navLike,postNo,stats }],
  *     tabRow, nav, manualFrame, note }
  *
  * 流程：先分類、再偵測
@@ -29,7 +30,8 @@
  *         或 1/6、1/2、5/6），其中只有一個 icon 下面有一條短底線（淺色＝黑線、深色＝白線）。
  *      2. 貼文區 top ＝ 底線／分隔線之下；左右貼齊全寬；三欄等寬。
  *      3. 格子比例：量第一排的列縫（3:4／4:5／1:1）；量不到就看第一篇的實際高度；再不行預設 3:4 並標「推測」。
- *      4. 下緣停在底部導覽列上緣（沒有導覽列就到圖底）。
+ *      4. 下緣停在底部導覽列上緣（導覽列：舊版 5 等分 icon、新版膠囊底／大致等距、或底部帶狀區；
+ *         都找不到就停在 H*0.9，最後一排再看實際內容到哪裡）。
  *      5. 找不到分頁列 → ok=false，交給使用者手動拖框（不硬給錯框）。
  *      沒有寫死任何像素位置或比例位置；頭像、簡介、按鈕、精選都在分頁列之上，不可能被當成貼文。
  *   C. 電腦／iPad → 沿用第二輪的通用偵測（下面 1–7）：
@@ -312,6 +314,63 @@
     return st.frac >= 0.15 || (st.frac >= 0.03 && st.std >= 10);
   }
 
+  // ===== 格子：像不像「導覽列碎片」（深色單色底＋少數小圖示） =====
+  /* 把格子縮成約 48 寬的取樣網格，算：
+   *   dom：最多的那個顏色（RGB 各量化成 16 階）占多少比例、它的亮度
+   *   comps：其餘像素的連通塊（8 鄰接，忽略 1 格的雜點）——數量、每塊的寬高、全部塊的上下範圍
+   * 給 looksLikeNavStrip 判斷。 */
+  function navStripStats(px, x, y, w, h) {
+    var d = px.data, x0 = Math.max(0, Math.round(x)), y0 = Math.max(0, Math.round(y));
+    var x1 = Math.min(px.w, Math.round(x + w)), y1 = Math.min(px.h, Math.round(y + h));
+    if (x1 - x0 < 4 || y1 - y0 < 4) return null;
+    var step = Math.max(1, Math.round((x1 - x0) / 48));
+    var gw = Math.ceil((x1 - x0) / step), gh = Math.ceil((y1 - y0) / step), n = gw * gh;
+    var q = new Int32Array(n), cnt = {}, best = -1, bestN = 0;
+    for (var j = 0; j < gh; j++) for (var i = 0; i < gw; i++) {
+      var k = ((y0 + j * step) * px.w + x0 + i * step) * 4;
+      var key = (d[k] >> 4) << 8 | (d[k + 1] >> 4) << 4 | (d[k + 2] >> 4);
+      q[j * gw + i] = key;
+      var c = (cnt[key] || 0) + 1; cnt[key] = c;
+      if (c > bestN) { bestN = c; best = key; }
+    }
+    var domLum = 0.299 * ((best >> 8) * 16 + 8) + 0.587 * (((best >> 4) & 15) * 16 + 8) + 0.114 * ((best & 15) * 16 + 8);
+    // 連通塊
+    var seen = new Uint8Array(n), comps = [], stack = [];
+    for (var s0 = 0; s0 < n; s0++) {
+      if (seen[s0] || q[s0] === best) continue;
+      var minX = gw, maxX = -1, minY = gh, maxY = -1, size = 0;
+      stack.push(s0); seen[s0] = 1;
+      while (stack.length) {
+        var p = stack.pop(), pxi = p % gw, pyi = (p / gw) | 0; size++;
+        if (pxi < minX) minX = pxi; if (pxi > maxX) maxX = pxi; if (pyi < minY) minY = pyi; if (pyi > maxY) maxY = pyi;
+        for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) {
+          var nx = pxi + dx, ny = pyi + dy;
+          if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+          var np = ny * gw + nx;
+          if (!seen[np] && q[np] !== best) { seen[np] = 1; stack.push(np); }
+        }
+      }
+      if (size >= 2) comps.push({ w: (maxX - minX + 1) / gw, h: (maxY - minY + 1) / gh, y0: minY / gh, y1: (maxY + 1) / gh });
+    }
+    return { dom: bestN / n, domLum: domLum, comps: comps };
+  }
+  /* 判斷規則（Bug 4：導覽列被當成貼文裁出來）：
+   *   底色是深色（亮度 < 60）且占 > 70%；其餘只有 1–6 個小塊，每塊高 ≤ 30%、寬 ≤ 80%（膠囊底可以寬），
+   *   而且全部擠在同一條橫帶裡（上下範圍 ≤ 40%）。真的深色照片通常有漸層／大面積內容，不會符合。 */
+  function looksLikeNavStrip(ns) {
+    if (!ns || ns.dom <= 0.7 || ns.domLum >= 60) return false;
+    var cs = ns.comps;
+    if (cs.length < 1 || cs.length > 6) return false;
+    if (cs.some(function (c) { return c.h > 0.3 || c.w > 0.8; })) return false;
+    var top = Math.min.apply(null, cs.map(function (c) { return c.y0; }));
+    var bot = Math.max.apply(null, cs.map(function (c) { return c.y1; }));
+    return bot - top <= 0.4;
+  }
+  /* 第 5 步要裁成舊貼文縮圖的格子：有貼文、看得到 ≥ 60%、不像導覽列碎片（grid.js cropExistingCells 與 app.js 共用） */
+  function usableCell(c) {
+    return !!(c && c.hasPost && c.visible >= 0.6 && !c.navLike);
+  }
+
   function buildCells(ctx, geo) {
     var px = ctx.px, M = ctx.M, sx = px.sx, sy = px.sy;
     var cw = geo.cw, g = geo.g, ch = cw * geo.r, pitch = ch + g;
@@ -321,7 +380,9 @@
       if (geo.rowTops && geo.rowTops[m + geo.minRow] !== undefined) top = geo.rowTops[m + geo.minRow];
       var visTop = Math.max(0, top), visBot = Math.min(bottomLimit, top + ch);
       // fullRows（手機版型定位、手動框）：框內每一排都列出，空的就標空格；否則看實際內容到哪裡
-      if (!geo.fullRows) visBot = contentBottom(M, geo.x0, 3 * cw + 2 * g, visTop, visBot, ch);
+      // trimLast（手機找不到導覽列）：碰到下緣的最後一排也看實際內容到哪裡
+      var isLast = top + ch >= bottomLimit - g;
+      if (!geo.fullRows || (geo.trimLast && isLast)) visBot = contentBottom(M, geo.x0, 3 * cw + 2 * g, visTop, visBot, ch);
       var vis = Math.max(0, visBot - visTop) / ch;
       if (vis >= 0.35) {
         rows++; lastVisBot = visBot;
@@ -329,11 +390,13 @@
           var x = geo.x0 + k * (cw + g);
           var st = cellStats(px, M, x, visTop, cw, visBot - visTop);
           var has = looksLikePost(st);
+          var nl = has ? navStripStats(px, x, visTop, cw, visBot - visTop) : null;
           cells.push({
             i: cells.length, row: rows - 1, col: k,
             x: x / sx, y: top / sy, w: cw / sx, h: ch / sy,
             visible: Math.round(vis * 100) / 100,
             hasPost: has, postNo: has ? ++posts : 0,
+            navLike: !!(nl && looksLikeNavStrip(nl)),
             stats: st ? { frac: round2(st.frac), r: Math.round(st.r), g: Math.round(st.g), b: Math.round(st.b), lum: Math.round(st.lum), std: round2(st.std) } : null
           });
         }
@@ -503,11 +566,66 @@
     return Math.sqrt(Math.max(0, s2 / n - m * m)) < 8;
   }
 
-  /* 底部導覽列：5 個等距小 icon（＋可能有 home indicator 細橫條） */
+  // ===== 底部導覽列：偵測（findNav ＋ 兩種判斷 ＋ 底部帶狀區保險） =====
+  /* 一排塊是不是「導覽列的 icon」：
+   *  (1) 舊版：5 個等距小 icon，中心在 W*(k+0.5)/5 附近（誤差 4.5%），至少中 4 個
+   *  (2) 新版：3 個以上、大致等距（相鄰間距與中位數差 ≤ 25%），橫跨至少半個寬度
+   * 兩種都允許「最多 1 塊」寬度在 13%–25%：選中分頁的膠囊底（例如頭像外面那塊灰色圓角底）
+   * 回傳 false，或 { pill: 有沒有膠囊底 } */
+  function navIconsOk(bl, W) {
+    if (bl.length < 3 || bl.length > 6) return false;
+    if (bl.some(function (x) { return x.w > W * 0.25; })) return false;
+    var wide = bl.filter(function (x) { return x.w > W * 0.13; }).length;
+    if (wide > 1) return false;
+    var ok = { pill: wide === 1 };
+    var hit = {};
+    bl.forEach(function (x) {
+      var k = Math.round(x.c / W * 5 - 0.5);
+      if (k >= 0 && k < 5 && Math.abs(x.c - (k + 0.5) * W / 5) < W * 0.045) hit[k] = 1;
+    });
+    if (Object.keys(hit).length >= 4) return ok;
+    var cs = bl.map(function (x) { return x.c; }).sort(function (a, b) { return a - b; });
+    var d = [];
+    for (var i = 1; i < cs.length; i++) d.push(cs[i] - cs[i - 1]);
+    var med = d.slice().sort(function (a, b) { return a - b; })[d.length >> 1];
+    if (med < W * 0.12) return false;
+    if (d.some(function (v) { return Math.abs(v - med) > med * 0.25; })) return false;
+    return cs[cs.length - 1] - cs[0] >= W * 0.5 ? ok : false;
+  }
+  /* 保險：圖片最下面約 12% 內，有一條橫跨全寬、和上方格子明顯不同的帶狀區（例如有底色的導覽列）
+   * 條件：連續 ≥ 3 列幾乎同色（uniformRow），上方幾列不是同一個純色，和上方格子區的平均亮度差 > 12，
+   *      顏色和頁面背景也不同（> 8；和背景同色的導覽列交給上面的 icon 判斷），高度 ≥ 圖高 4%，
+   *      而且從這裡到圖底，大部分（≥ 60%）的列都是同一個底色（中間只夾著 icon）。 */
+  function findNavBand(P) {
+    var px = P.px, W = px.w, H = px.h, d = px.data;
+    if (!px.data) return null;
+    var step = Math.max(1, Math.round(W / 200));
+    function rowLum(y) {
+      var s = 0, n = 0;
+      for (var x = 0; x < W; x += step) { var i = (y * W + x) * 4; s += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]; n++; }
+      return s / n;
+    }
+    var y0 = Math.round(H * 0.88), aboveL = 0, na = 0;
+    for (var ya = Math.round(H * 0.7); ya < y0; ya += 4) { aboveL += rowLum(ya); na++; }
+    aboveL = na ? aboveL / na : 0;
+    for (var y = y0; y < H - 4; y++) {
+      if (!(uniformRow(px, y) && uniformRow(px, y + 1) && uniformRow(px, y + 2))) continue;
+      var L = rowLum(y);
+      if (H - y < H * 0.04) break;
+      var yUp = Math.max(0, y - 3); // 縮圖會把交界那一列混色，往上多看幾列
+      if ((uniformRow(px, yUp) && Math.abs(L - rowLum(yUp)) <= 6) || Math.abs(L - aboveL) <= 12) continue;
+      if (P.bg && P.bg.lum !== undefined && Math.abs(L - P.bg.lum) <= 8) continue;
+      var same = 0, tot = 0;
+      for (var yy = y; yy < H; yy += 2) { tot++; if (Math.abs(rowLum(yy) - L) < 10) same++; }
+      if (tot && same / tot >= 0.6) return { top: y, iconY0: y, iconY1: H - 1, home: false, band: true };
+    }
+    return null;
+  }
+  /* 底部導覽列：先找 icon 列（navIconsOk），再找底部帶狀區（findNavBand）；都沒有回傳 null */
   function findNav(P) {
     var M = P.M, W = M.w, H = M.h;
     var bands = bandsIn(M, Math.round(H * 0.82), H);
-    var home = null, icons = null;
+    var home = null, icons = null, pill = false;
     for (var i = bands.length - 1; i >= 0; i--) {
       var b = bands[i];
       if (!home && !icons && b.h <= H * 0.012 && b.y0 > H * 0.95) {
@@ -515,25 +633,19 @@
         if (hb.length === 1 && hb[0].w > W * 0.2 && hb[0].w < W * 0.5 && Math.abs(hb[0].c - W / 2) < W * 0.05) { home = b; continue; }
       }
       if (b.h < W * 0.015 || b.h > W * 0.1) continue;
-      var bl = blobsIn(M, b.y0, b.y1, Math.round(W * 0.02));
-      if (bl.length < 4 || bl.length > 6) continue;
-      if (bl.some(function (x) { return x.w > W * 0.13; })) continue;
-      var hit = {};
-      bl.forEach(function (x) {
-        var k = Math.round(x.c / W * 5 - 0.5);
-        if (k >= 0 && k < 5 && Math.abs(x.c - (k + 0.5) * W / 5) < W * 0.045) hit[k] = 1;
-      });
-      if (Object.keys(hit).length >= 4) { icons = b; break; }
+      var okN = navIconsOk(blobsIn(M, b.y0, b.y1, Math.round(W * 0.02)), W);
+      if (okN) { icons = b; pill = okN.pill; break; }
     }
-    if (!icons) return null;
+    if (!icons) return findNavBand(P);
     // 導覽列上緣：icon 之上若有一條分隔線就用它，否則留 icon 高度的 0.7 倍
-    var top = Math.max(0, icons.y0 - Math.round(icons.h * 0.7));
+    // （有膠囊底時這條帶子的高度是膠囊高，比 icon 高很多 → 只留 0.2 倍）
+    var top = Math.max(0, icons.y0 - Math.round(icons.h * (pill ? 0.2 : 0.7)));
     var j = bands.indexOf(icons);
     if (j > 0) {
       var prev = bands[j - 1];
       if (prev.h <= 3 && icons.y0 - prev.y1 < icons.h * 1.6 && M.rowCnt[prev.y0] > W * 0.85) top = prev.y0;
     }
-    return { top: top, iconY0: icons.y0, iconY1: icons.y1, home: !!home };
+    return { top: top, iconY0: icons.y0, iconY1: icons.y1, home: !!home, pill: pill };
   }
 
   /* 頂部狀態列：上方 7% 內有一條細帶，左邊有時間、右邊有訊號／電量 */
@@ -684,7 +796,8 @@
   function detectPhone(px) {
     var P = phoneCtx(px), M = P.M, W = px.w, H = px.h;
     var nav = findNav(P);
-    var bottom = nav ? nav.top : H;
+    // 找不到導覽列：不要延伸到圖底（導覽列常常就在最下面 10%），改停在 H*0.9，最後一排再跑 contentBottom
+    var bottom = nav ? nav.top : Math.round(H * 0.9);
     var tab = findTabRow(P, Math.round(nav ? nav.top : H * 0.94));
     var ctx = { px: px, M: M, bg: P.bg };
     var res;
@@ -702,7 +815,7 @@
       var g = Math.max(1, Math.round(W * 0.0025));
       var cw = (W - 2 * g) / 3;
       var mr = measureRatio(P, top, bottom, cw, g);
-      var geo = { x0: 0, cw: cw, g: g, r: mr.R.r, ratio: mr.R.id, y0: top, bottom: bottom, minRow: 0, fullRows: true };
+      var geo = { x0: 0, cw: cw, g: g, r: mr.R.r, ratio: mr.R.id, y0: top, bottom: bottom, minRow: 0, fullRows: true, trimLast: !nav };
       res = buildCells(ctx, geo);
       res.box = { x: 0, y: top / px.sy, w: px.nw, h: (bottom - top) / px.sy };
       res.ratioGuessed = mr.how === 'guess';
@@ -886,7 +999,8 @@
     fromFrame: fromFrame,
     pickArchive: pickArchive,
     archiveCount: archiveCount,
+    usableCell: usableCell,
     // 測試／除錯用（不屬於穩定介面）
-    _dbg: { getPixels: getPixels, phoneCtx: phoneCtx, bandsIn: bandsIn, blobsIn: blobsIn, findTabRow: findTabRow, findNav: findNav }
+    _dbg: { getPixels: getPixels, phoneCtx: phoneCtx, bandsIn: bandsIn, blobsIn: blobsIn, findTabRow: findTabRow, findNav: findNav, navStripStats: navStripStats, looksLikeNavStrip: looksLikeNavStrip }
   };
 })();

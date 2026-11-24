@@ -311,6 +311,8 @@ h1, h2, h3 { margin: 0; font-family: var(--serif); font-weight: 300; }
 .archive-list .pos { font-family: var(--latin); font-style: italic; color: var(--accent-ink); font-size: 16px; letter-spacing: .06em; line-height: 1.5; }
 .archive-list .where { display: block; font-weight: 400; color: var(--ink); font-family: var(--serif); letter-spacing: .06em; }
 .an-foot { margin-top: 48px; display: flex; justify-content: flex-end; }
+.an-foot.an-foot-top { margin-top: 20px; justify-content: flex-start; }
+.nowrap { white-space: nowrap; }
 
 /* ---------- 4. Next shot ---------- */
 .shotcard { background: var(--surface); border: 1px solid var(--line); margin-top: 32px; }
@@ -895,10 +897,29 @@ body.is-dragging { overflow: hidden; touch-action: none; }
 .pgrid { position: relative; }
 .pc-slot { position: absolute; border: 1px dashed var(--ink-3); box-sizing: border-box; pointer-events: none; z-index: 1; background: rgba(246, 242, 236, .35); }
 .pgrid .pc.is-gone { opacity: 0; }
+/* ===== 第 5 步：拖曳防 iOS 中斷（長按不叫出系統選單／圖片拖放，第五輪第 2 節） ===== */
+.pgrid .pc { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.pgrid .pc img, .pgrid .pc canvas { -webkit-user-drag: none; pointer-events: none; }
+/* ===== 第 5 步：長按成立回饋 .is-lift（格子放大＋陰影） ===== */
+.pgrid .pc.is-lift { transform: scale(1.04); box-shadow: 0 8px 24px rgba(43, 39, 36, .22); z-index: 2; transition: transform 120ms ease, box-shadow 120ms ease; }
+.pc.ghost.is-lift { transform: scale(1.06); box-shadow: 0 12px 28px rgba(43, 39, 36, .26); }
 .pc.ghost {
   position: fixed; z-index: 80; pointer-events: none; margin: 0; opacity: .92;
   transform: scale(1.04); box-shadow: 0 8px 24px rgba(43, 39, 36, .18);
 }
+/* ===== 第 5 步：點選互換（選取框＋小勾、可點的格子、互換小動畫；第五輪第 3 節，js/step5-swap.js） ===== */
+.pgrid.is-picking .pc:not(.none):not(.is-sel) { outline: 1px dashed rgba(43, 39, 36, .45); outline-offset: -3px; }
+.phone-frame[data-theme="dark"] .pgrid.is-picking .pc:not(.none):not(.is-sel) { outline-color: rgba(246, 242, 236, .55); }
+.pgrid .pc.is-sel { outline: 2px solid var(--accent); outline-offset: -2px; opacity: 1; z-index: 2; }
+.pc-sel {
+  position: absolute; right: 4px; top: 4px; z-index: 4; display: inline-flex; align-items: center; gap: 3px;
+  font-size: 12px; line-height: 1; padding: 4px 6px 4px 4px; white-space: nowrap;
+  background: var(--accent); color: #fff; border-radius: var(--r); pointer-events: none;
+}
+.pc-sel svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; }
+.pgrid .pc.is-swapped { animation: pc-swap 250ms ease-out; }
+@keyframes pc-swap { from { transform: scale(.9); opacity: .4; } }
+@media (prefers-reduced-motion: reduce) { .pgrid .pc.is-swapped { animation: none; } }
 .ig-todo { max-width: 420px; margin: 20px auto 0; }
 .ig-todo .todo { margin: 0; padding-left: 1.2em; color: var(--ink-2); font-size: 15px; line-height: 1.7; }
 .ig-todo .todo li { margin: 6px 0; }
@@ -960,3 +981,34 @@ body.is-dragging { overflow: hidden; touch-action: none; }
   .top-in, .brand { min-height: 44px; }
   .brand { display: inline-flex; align-items: center; }
 }
+
+/* ===== 第五輪第 5 節：「拿掉」鈕不換行（DIAGNOSIS Bug 5） ===== */
+.pc-rm { width: auto; height: auto; min-width: 44px; min-height: 44px; }
+.pc-rm span { white-space: nowrap; }
+@media (max-width: 879px) {
+  .pc-rm span { letter-spacing: 0; padding: 3px 6px; }
+}
+
+/* ===== 第五輪第 6 節：配樂區溢出（DIAGNOSIS Bug 6） ===== */
+.song { grid-template-columns: 32px minmax(0, 1fr); }
+.song-body, .song-top > *, .pv, .pv-ctl > *, .pv-meta > *, .pv-ext > *, .musicbox, .mb-foot > *, .ph > * { min-width: 0; }
+.pv-left { white-space: nowrap; }
+.fb-hl { overflow: hidden; }
+@media (max-width: 879px) {
+  .ph { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ===== 第五輪第 7 節：曲風標籤、相近推薦、曲風／語言衝突提示 ===== */
+.song-g { white-space: nowrap; }
+.song-near { display: inline-block; font-size: 12px; line-height: 1.4; padding: 0 6px; border: 1px solid var(--ink-3); border-radius: 999px; color: var(--ink-3); white-space: nowrap; vertical-align: 1px; }
+.mf-hint { font-size: 13px; color: var(--ink-2); margin-top: 8px; overflow-wrap: anywhere; }
+
+/* ===== 第 5 步：版面星數（#layoutScore，格子區正下方） ===== */
+.layout-score { margin: 10px 0 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 14px; color: var(--ink-2); }
+.layout-score .ls-stars { color: #B8893A; letter-spacing: 2px; font-size: 16px; }
+.layout-score .ls-cmp { color: var(--ink); font-weight: 600; }
+.layout-score .ls-why { flex-basis: 100%; min-width: 0; }
+/* 自動排好推薦版本提示（js/auto-arrange.js） */
+.auto-note { margin: 12px 0 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 14px; color: var(--ink); }
+.auto-note[hidden] { display: none; }
+.auto-note > span { min-width: 0; }

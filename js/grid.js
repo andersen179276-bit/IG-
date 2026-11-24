@@ -273,10 +273,15 @@
   /* 從主頁截圖裁出既有貼文（第 5 步九宮格預覽用）。
    * img：已載入的 HTMLImageElement；grid：GridDetect 的結果（只取真的有貼文、看得到大半的格子）。
    * 每格置中裁成 4:5，輸出 216×270。 */
+  // 有貼文、看得到 ≥ 60%、不像導覽列碎片（判斷在 GridDetect.usableCell；navLike 由偵測時算好）
+  function usable(c) {
+    if (window.GridDetect && window.GridDetect.usableCell) return window.GridDetect.usableCell(c);
+    return c.hasPost && c.visible >= 0.6 && !c.navLike;
+  }
   function cropExistingCells(img, grid, count) {
     var out = [];
     if (!grid || !grid.cells) return out;
-    grid.cells.filter(function (c) { return c.hasPost && c.visible >= 0.6; }).slice(0, count).forEach(function (c) {
+    grid.cells.filter(usable).slice(0, count).forEach(function (c) {
       var top = Math.max(0, c.y), bot = Math.min(img.naturalHeight, c.y + c.h * c.visible);
       var w = c.w, h = bot - top, sx = c.x, sy = top;
       if (w / h > 0.8) { var nw = h * 0.8; sx += (w - nw) / 2; w = nw; } else { var nh = w / 0.8; sy += (h - nh) / 2; h = nh; }

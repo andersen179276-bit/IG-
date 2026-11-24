@@ -32,6 +32,7 @@
     photos: [], cur: null,
     existing: null, existingKey: null, existingHints: [],
     order: null,
+    swapSel: null,   // 第 5 步點選互換：已選取那一格的 order 索引（js/step5-swap.js）
     chrome: null,
     music: { seed: 0, avoid: [], recs: null, returnTo: null, tab: 'genre', draft: null, taste: null, lang: 'all', focus: false }
   };
@@ -563,13 +564,20 @@
         '<div class="an">' +
           '<div class="an-head stg">' +
             '<div class="title-row"><span class="eyebrow" style="margin:0">步驟 03 — 讀主頁</span><span class="tag-demo">示範內容</span></div>' +
-            '<h1 class="h1 mt-16">以「' + s.name + '」來看，<br>你的主頁</h1>' +
+            '<h1 class="h1 mt-16">' + analysisVerdict(a) + '</h1>' +
             '<p class="summary">' + a.summary + '</p>' +
+            '<div class="an-foot an-foot-top"><button class="btn" type="button" id="toNextTop">看下一篇拍什麼 ' + I.arrow + '</button></div>' +
           '</div>' +
           '<div class="an-left stg" id="anLeft"></div>' +
           '<div class="an-body">' +
             '<div class="stg">' +
-              '<span class="section-label">五個面向</span>' +
+              '<span class="section-label">接下來要做的三件事</span>' +
+              '<ol class="tips">' + a.tips.map(function (t, i) {
+                return '<li><span class="num">' + pad2(i + 1) + '</span><div><h3>' + t.title + '</h3><p>' + t.body + '</p></div></li>';
+              }).join('') + '</ol>' +
+            '</div>' +
+            '<div class="stg mt-48">' +
+              '<span class="section-label">細節：五個面向</span>' +
               '<div class="dims">' + a.dims.map(function (d) {
                 var lv = levelOf(d.value);
                 return '<div class="dim"><div class="dim-top"><span class="dim-name">' + d.label + '</span><span class="dim-lv ' + lv.cls + '">' + lv.t + '</span></div>' +
@@ -577,14 +585,9 @@
                   '<p class="dim-note">' + d.note + '</p></div>';
               }).join('') + '</div>' +
               '<p class="small mt-24">細條分三段：可以再加強／還可以／穩定。這裡不打分數，只看方向。</p>' +
-            '</div>' +
-            '<div class="stg mt-48">' +
-              '<span class="section-label">三件可以做的事</span>' +
-              '<ol class="tips">' + a.tips.map(function (t, i) {
-                return '<li><span class="num">' + pad2(i + 1) + '</span><div><h3>' + t.title + '</h3><p>' + t.body + '</p></div></li>';
-              }).join('') + '</ol>' +
               '<div class="an-foot"><button class="btn" type="button" id="toNext">下一篇拍什麼 ' + I.arrow + '</button></div>' +
             '</div>' +
+
           '</div>' +
         '</div>' +
       '</div>';
@@ -596,6 +599,20 @@
       });
     });
     document.getElementById('toNext').addEventListener('click', function () { go('next'); });
+    document.getElementById('toNextTop').addEventListener('click', function () { go('next'); });
+  }
+
+  // 步驟 3 標題：先講結論與要做的動作（有建議收起的格子就直接說第幾格）
+  function analysisVerdict(a) {
+    var g = state.shot && state.shot.grid;
+    var arch = [];
+    try { if (g && g.ok && g.mode !== 'manual') arch = GD.pickArchive(g); } catch (e) {}
+    if (arch.length) {
+      return '先收起' + arch.slice(0, 3).map(function (x) { return '<span class="nowrap">第 ' + (x.cell.row + 1) + ' 排第 ' + (x.cell.col + 1) + ' 格</span>'; }).join('、') +
+        '，<br>再照下面三件事做';
+    }
+    var t = a.tips && a.tips[0];
+    return t ? '先做這件事：<br>' + t.title : '照下面三件事做';
   }
 
   /* ---------- 截圖面板：偵測框、格線、封存標記、手動拖框 ---------- */
@@ -845,10 +862,10 @@
       '<div class="wrap screen">' +
         '<div class="stg">' +
           '<div class="title-row"><span class="eyebrow" style="margin:0">步驟 04 — 下一篇</span><span class="tag-demo">示範內容</span></div>' +
-          '<h1 class="h1 mt-16">下一篇，拍這個。</h1>' +
-          '<p class="lead">依你選的「' + s.name + '」與剛才的分析，挑一張最能讓主頁變安靜的照片。</p>' +
+          '<h1 class="h1 mt-16" id="nextTitle">下一篇拍這個：' + sc.theme + '</h1>' +
         '</div>' +
         '<article class="shotcard stg" id="shotCard">' + shotCardInner(sc, i, list.length) + '</article>' +
+        '<p class="lead stg">依你選的「' + s.name + '」與剛才的分析，挑一張最能讓主頁變安靜的照片。</p>' +
         '<div class="sc-tools stg">' +
           '<div class="dots" aria-hidden="true">' + list.map(function (_, k) { return '<i class="' + (k === i ? 'on' : '') + '"></i>'; }).join('') + '</div>' +
           '<div class="actions">' +
@@ -861,6 +878,7 @@
       state.shotIndex = (state.shotIndex + 1) % state.shots.length;
       var card = document.getElementById('shotCard');
       card.innerHTML = shotCardInner(state.shots[state.shotIndex], state.shotIndex, state.shots.length);
+      document.getElementById('nextTitle').textContent = '下一篇拍這個：' + state.shots[state.shotIndex].theme;
       card.classList.remove('fade-swap'); void card.offsetWidth; card.classList.add('fade-swap');
       qsa('.dots i', $main).forEach(function (d, k) { d.classList.toggle('on', k === state.shotIndex); });
     });
@@ -897,6 +915,7 @@
   /* =========================================================
      5. 整理新照片（canvas，本地處理）
      ========================================================= */
+  // ===== 第 5 步：頁面狀態與進出（cleanupPhotos／viewPhotos） =====
   var ph = { raf: 0, stageCv: null, drag: null, listeners: [] };
 
   function cleanupPhotos() {
@@ -935,6 +954,7 @@
   }
 
   /* 多張照片：逐張讀（每張之間讓畫面喘口氣），顯示「正在讀取第 n／N 張…」 */
+  // ===== 第 5 步：讀取新照片 =====
   function addFiles(fileList) {
     var files = Array.prototype.filter.call(fileList || [], function (f) { return /^image\//.test(f.type) || isHeic(f); });
     if (!files.length) { toast('請選擇圖片檔'); return; }
@@ -980,6 +1000,7 @@
   }
 
   // 既有貼文：有主頁截圖就從偵測到的貼文格裁，沒有就用抽象色塊
+  // ===== 第 5 步：既有貼文縮圖（從主頁截圖裁格） =====
   function prepareExisting() {
     var sh = state.shot;
     if (!sh && state.shotP) { // 重新整理後截圖還在還原中
@@ -992,7 +1013,7 @@
     // 分析頁標「建議封存」的格子 → 第 5 步加小標「建議拿掉」
     var archSet = {};
     if (g.ok && g.mode !== 'manual') GD.pickArchive(g).forEach(function (x) { archSet[x.cell.i] = 1; });
-    var cells = g.cells.filter(function (c) { return c.hasPost && c.visible >= 0.6; }).slice(0, 12);
+    var cells = g.cells.filter(GD.usableCell).slice(0, 12); // 和 Grid.cropExistingCells 同一套篩選（排除導覽列碎片）
     var img = new Image();
     img.onload = function () {
       state.existing = Grid.cropExistingCells(img, g, 12);
@@ -1004,6 +1025,7 @@
     img.src = sh.url;
   }
 
+  // ===== 第 5 步：拿掉／還原（archiveOld、restoreOld、restoreAll、drawArchived） =====
   /* ---------- 第 5 步：既有貼文「暫時拿掉」（模擬封存，絕不真的刪除） ----------
    * localStorage['liuge.archived.v1'] = { v:1, src:'來源截圖識別（檔名|寬x高）', removed:[原始索引…], updatedAt }
    * 原始索引 k ＝ 這張貼文在主頁上的順序（0 起算，畫面顯示「原第 k+1 格」）。恢復時依 k 排回原位，不是補到最後。 */
@@ -1062,7 +1084,7 @@
     toast('已全部還原');
   }
   function oldThumbHTML(it) {
-    return it.url ? '<img alt="" src="' + it.url + '">' : Grid.cellHTML(it.cell);
+    return it.url ? '<img alt="" src="' + it.url + '" draggable="false">' : Grid.cellHTML(it.cell);
   }
   function drawArchived() {
     var box = document.getElementById('archBox');
@@ -1087,6 +1109,7 @@
     if (all) all.addEventListener('click', restoreAll);
   }
 
+  // ===== 第 5 步：整頁重畫（drawPhotos 會重建配樂區，換位置時不要呼叫） =====
   function drawPhotos() {
     var body = document.getElementById('phBody');
     if (!body) return;
@@ -1153,6 +1176,7 @@
     bindEditor(p);
   }
 
+  // ===== 第 5 步：單張照片編輯器（滑桿、舞台、縮圖列） =====
   function slider(key, label, min, max, step, val) {
     return '<div class="sl"><label for="sl-' + key + '">' + label + '</label>' +
       '<input type="range" id="sl-' + key + '" data-k="' + key + '" min="' + min + '" max="' + max + '" step="' + step + '" value="' + val + '">' +
@@ -1276,9 +1300,10 @@
   }
 
   var PIN_KEY = 'liuge.pinned.v1';
-  var HINT_KEY = 'liuge.draghint.v1';
+  var HINT_KEY = 'liuge.draghint.v2';   // v2：提示改成點選互換，關過舊提示的人也再看一次
   var LANG_KEY = 'liuge.music.lang';
 
+  // ===== 第 5 步：釘選與順序（pinList、ensureOrder、syncPhotoOrder） =====
   function pinList() {
     try {
       var o = JSON.parse(localStorage.getItem(PIN_KEY) || 'null');
@@ -1306,6 +1331,7 @@
     state.photos.forEach(function (p) { if (ids.indexOf(p.id) < 0) next.push(p); });
     state.photos = next;
   }
+  // ===== 第 5 步：配樂語言偏好 =====
   function musicLang() {
     try {
       var v = localStorage.getItem(LANG_KEY);
@@ -1318,21 +1344,31 @@
     try { localStorage.setItem(LANG_KEY, v); } catch (e) {}
     state.music.recs = null;
   }
+  // ===== 第 5 步：九宮格預覽外框與操作提示（#dragHint） =====
+  var HINT_TEXT = '點一張照片，再點另一格就能互換；電腦也可以按住拖曳';
+  var HINT_PICK = '再點另一格就會互換（點同一格取消）';
+  function setHint(text) {
+    var sp = document.querySelector('#dragHint span');
+    if (sp) { sp.textContent = text; return true; }
+    return false;
+  }
   function hintHidden() {
     try { return localStorage.getItem(HINT_KEY) === '1'; } catch (e) { return false; }
   }
 
   function gridPreviewShell() {
     var hasOld = state.shot && state.shot.grid && state.shot.grid.posts;
-    var note = hasOld ? '上半部是你的主頁截圖，下面的格子可以拖。既有貼文裁自偵測到的 ' + state.shot.grid.posts + ' 篇。' : '沒有截圖時用示範版頭，下面的色塊代表既有貼文。';
+    var note = hasOld ? '上半部是你的主頁截圖，下面的格子可以互換位置。既有貼文裁自偵測到的 ' + state.shot.grid.posts + ' 篇。' : '沒有截圖時用示範版頭，下面的色塊代表既有貼文。';
     var n = state.photos.length;
     var hint = hintHidden() ? '' :
-      '<div class="drag-hint" id="dragHint"><span>按住照片拖曳可以換位置</span><button type="button" id="dragHintX" aria-label="關閉提示">' + I.close + '</button></div>';
+      '<div class="drag-hint" id="dragHint" aria-live="polite"><span>' + HINT_TEXT + '</span><button type="button" id="dragHintX" aria-label="關閉提示">' + I.close + '</button></div>';
     return '<span class="section-label">整個主頁</span>' +
       '<h2 class="h2">排在主頁上的樣子</h2>' +
-      '<p class="small mt-8">' + note + '新照片與舊貼文都可以拖到任何一格。主頁縮圖以 4:5 直式呈現。</p>' +
+      '<p class="small mt-8">' + note + '新照片與舊貼文都可以換到任何一格。主頁縮圖以 4:5 直式呈現。</p>' +
       hint +
       '<div class="phone-frame" id="phoneFrame"><div class="ig-head" id="igHead"></div><div class="pgrid" id="pgrid"></div><div class="ig-nav" id="igNav" hidden></div></div>' +
+      '<div class="auto-note" id="autoNote" aria-live="polite" hidden></div>' +
+      '<p class="layout-score" id="layoutScore" aria-live="polite" hidden></p>' +
       '<div class="gp-legend"><span><i></i>新照片</span><span><i class="o"></i>既有貼文 · 可拿掉、可釘選</span></div>' +
       '<div id="igTodo" class="ig-todo"></div>' +
       '<div id="archBox" class="archbox"></div>' +
@@ -1345,6 +1381,7 @@
       '</div>';
   }
 
+  // ===== 第 5 步：仿 IG 主頁版頭 =====
   function headerHTML() {
     var ch = state.chrome;
     if (ch && ch.url) {
@@ -1366,6 +1403,7 @@
     };
   }
 
+  // ===== 第 5 步：IG 待辦清單 =====
   function drawIgTodo() {
     var box = document.getElementById('igTodo');
     if (!box) return;
@@ -1389,9 +1427,14 @@
     }
   }
 
-  function drawGridPreview() {
+  // ===== 第 5 步：九宮格預覽重畫（只動 #pgrid；opts.keepMusic 時連配樂區也不碰） =====
+  function drawGridPreview(opts) {
     var g = document.getElementById('pgrid');
     if (!g) return;
+    // 重畫後索引可能變了：選取一律清掉
+    state.swapSel = null;
+    window.Step5.markSel(g, null);   // #pgrid 本身不會被換掉：清掉 .is-picking 虛線
+    setHint(HINT_TEXT);
     paintChrome();
     var order = ensureOrder();
     var pins = pinList();
@@ -1407,7 +1450,7 @@
         var p = byId[it.id];
         if (!p) return '';
         var no = newOrdinal[p.id];
-        return '<div class="pc new' + (p.id === state.cur ? ' cur' : '') + '" data-i="' + i + '" data-id="' + p.id + '" tabindex="0" role="button" aria-label="第 ' + no + ' 張新照片，拖曳可換位置">' +
+        return '<div class="pc new' + (p.id === state.cur ? ' cur' : '') + '" data-i="' + i + '" data-id="' + p.id + '" tabindex="0" role="button" aria-label="第 ' + no + ' 張新照片，點一下選取後再點另一格互換">' +
           '<canvas data-pid="' + p.id + '" width="216" height="270"></canvas><span class="badge">' + pad2(no) + '</span></div>';
       }
       var old = byK[it.k];
@@ -1417,7 +1460,7 @@
       var pinBtn = moved && i < 3 && !pinned
         ? '<button class="pc-pin" type="button" data-pin="' + it.k + '">改成釘選</button>' : '';
       var unpin = pinned ? '<button class="pc-pin" type="button" data-unpin="' + it.k + '">取消釘選</button>' : '';
-      return '<div class="pc old' + (pinned ? ' is-pin' : '') + (moved ? ' is-moved' : '') + '" data-i="' + i + '" data-k="' + it.k + '" tabindex="0" role="button" aria-label="原第 ' + (it.k + 1) + ' 格既有貼文，拖曳可換位置">' +
+      return '<div class="pc old' + (pinned ? ' is-pin' : '') + (moved ? ' is-moved' : '') + '" data-i="' + i + '" data-k="' + it.k + '" tabindex="0" role="button" aria-label="原第 ' + (it.k + 1) + ' 格既有貼文，點一下選取後再點另一格互換">' +
         oldThumbHTML(old) +
         (pinned ? '<span class="pc-pinmark" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 1.5v7.2M5.2 4.2h5.6M6.4 8.6 8 14.2 9.6 8.6"/></svg></span>' : '') +
         (old.hint && !moved ? '<span class="pc-hint">建議拿掉</span>' : '') +
@@ -1458,11 +1501,96 @@
     drawArchived();
     drawIgTodo();
     paintThumbs();
+    if (autoArrange()) { drawGridPreview(opts); refreshStrip(); return; }
+    drawAutoNote();
     bindGridDrag(g);
     bindDownloads();
-    renderMusicBox();
+    updateLayoutScore(scoreCompare);
+    scoreCompare = false;
+    if (!(opts && opts.keepMusic)) renderMusicBox();
   }
 
+  // ===== 第 5 步：版面星數（計分在 js/layout-score.js；顯示在 #layoutScore，只重寫這一小塊） =====
+  // 只在放下／互換／復原後帶「比剛剛…」；其他重畫（拿掉、釘選、進頁）只顯示星數，但會更新比較基準。
+  var scoreCompare = false;
+  function updateLayoutScore(withCompare) {
+    var box = document.getElementById('layoutScore');
+    if (!box || !window.Step5.showScore) return;
+    var src = scoreSources();
+    var cells = src.cells, waiting = src.waiting;
+    var out = window.Step5.showScore(box, cells, withCompare ? state.layoutScore : null);
+    if (!out) return;
+    state.layoutScore = out.result;
+    // 舊貼文圖片還沒載好：等載好再補算一次（不帶比較）
+    if (out.pending) {
+      waiting.forEach(function (img) {
+        if (!img.complete) img.addEventListener('load', function () { if (img.isConnected) updateLayoutScore(false); }, { once: true });
+      });
+    }
+  }
+  // 每格取樣來源（{ canvas }／{ img, url }／{ hex }／null）；waiting＝格子裡的舊貼文 img
+  function scoreSources() {
+    var byId = {};
+    state.photos.forEach(function (p) { byId[p.id] = p; });
+    var byK = {};
+    existingItems().forEach(function (it) { byK[it.k] = it; });
+    var waiting = [];
+    var cells = ensureOrder().map(function (it, i) {
+      if (it.t === 'n') { var p = byId[it.id]; return p && p._thumb ? { canvas: p._thumb } : null; }
+      var old = byK[it.k];
+      if (!old) return null;
+      if (old.url) {
+        var img = qs('#pgrid .pc[data-i="' + i + '"] img');
+        if (img) waiting.push(img);
+        return img ? { img: img, url: old.url } : null;
+      }
+      return old.cell && old.cell.bg ? { hex: old.cell.bg } : null;
+    });
+    return { cells: cells, waiting: waiting };
+  }
+
+  // ===== 第 5 步：自動排好推薦版本（挑排列在 js/auto-arrange.js；使用者手動排過就不再覆蓋） =====
+  // state.auto：{ key（已排過的照片組合）, before（自動排之前的順序）, manual（手動排過） }
+  function autoArrange() {
+    var A = state.auto || (state.auto = {});
+    if (A.manual || !window.AutoArrange || !window.LayoutScore) return false;
+    var order = ensureOrder();
+    var key = order.filter(function (it) { return it.t === 'n'; }).map(function (it) { return it.id; }).sort().join(',') + '|' + keptOldKs().join(',');
+    if (A.key === key) return false;
+    var src = scoreSources();
+    var stats = src.cells.map(function (c) { return window.LayoutScore.measure(c); });
+    if (src.cells.some(function (c, i) { return c && !stats[i]; })) {
+      // 還有圖片沒載好：載好再排
+      src.waiting.forEach(function (img) {
+        if (!img.complete) img.addEventListener('load', function () {
+          if (img.isConnected && autoArrange()) { drawGridPreview({ keepMusic: true }); refreshStrip(); }
+        }, { once: true });
+      });
+      return false;
+    }
+    var next = window.AutoArrange.best(order, stats);
+    A.key = key;
+    A.applied = true;
+    if (window.AutoArrange.same(next, order)) { A.before = null; return false; }
+    A.before = order.slice();
+    applyOrder(next);
+    return true;
+  }
+  function drawAutoNote() {
+    var A = state.auto || {};
+    window.AutoArrange && window.AutoArrange.showNote(document.getElementById('autoNote'),
+      !!(A.applied && !A.manual && state.photos.length > 1), !!A.before, function () {
+        A.manual = true;
+        if (A.before) applyOrder(A.before);
+        scoreCompare = true;
+        drawGridPreview({ keepMusic: true });
+        refreshStrip();
+        toast('已改回原本順序');
+      });
+  }
+  function markManual() { state.auto = state.auto || {}; state.auto.manual = true; }
+
+  // ===== 第 5 步：釘選／取消釘選舊貼文 =====
   function pinOld(k) {
     var pins = pinList();
     if (pins.indexOf(k) >= 0) return;
@@ -1480,6 +1608,7 @@
     toast('已取消釘選');
   }
 
+  // ===== 第 5 步：下載（單張／zip） =====
   function bindDownloads() {
     var dl = document.getElementById('dlAll'), dz = document.getElementById('dlZip');
     if (dl && !dl._bound) {
@@ -1505,9 +1634,8 @@
     }
   }
 
-  function commitMove(from, to) {
-    var order = ensureOrder();
-    var next = window.Step5.arrayMove(order, from, to);
+  // ===== 第 5 步：寫入新順序（釘選只保留仍在最前面連續的；拖曳與互換共用） =====
+  function applyOrder(next) {
     var pins = pinList();
     var kept = [];
     var broken = false;
@@ -1519,39 +1647,107 @@
     state.order = next;
     syncPhotoOrder();
     state.music.recs = null;
-    drawPhotos();
   }
 
-  // 九宮格拖曳：滑鼠按住就拖；觸控長按約 0.2 秒。鍵盤 ← → 仍可移動（畫面上沒有箭頭按鈕）。
+  // ===== 第 5 步：換位置寫入（拖曳放下、鍵盤 ← →） =====
+  function commitMove(from, to) {
+    markManual();
+    applyOrder(window.Step5.arrayMove(ensureOrder(), from, to));
+    scoreCompare = true;
+    drawGridPreview({ keepMusic: true });   // 跟互換一樣只重畫格子＋星數，不重建配樂區
+    refreshStrip();
+  }
+
+  // ===== 第 5 步：點選互換接線（邏輯在 js/step5-swap.js；只重畫格子，不重建配樂區） =====
+  function swapCtx() {
+    return {
+      getSel: function () { return state.swapSel; },
+      setSel: function (i) { state.swapSel = i; },
+      onSelect: function (i) {
+        window.Step5.markSel(document.getElementById('pgrid'), i);
+        if (!setHint(HINT_PICK)) toast(HINT_PICK);
+      },
+      onClear: function () {
+        window.Step5.markSel(document.getElementById('pgrid'), null);
+        setHint(HINT_TEXT);
+      },
+      swap: swapCells
+    };
+  }
+  function tapCell(i) { return window.Step5.swapTap(i, swapCtx()); }
+  function swapCells(a, b) {
+    markManual();
+    var before = { order: ensureOrder().slice(), pins: pinList() };
+    applyOrder(window.Step5.arraySwap(ensureOrder(), a, b));
+    scoreCompare = true;
+    redrawAfterSwap(a, b);
+    toast('已互換第 ' + (Math.min(a, b) + 1) + ' 和第 ' + (Math.max(a, b) + 1) + ' 格', {
+      label: '復原',
+      fn: function () {
+        // 復原＝換回去（連釘選一起還原）
+        pinSave(before.pins);
+        state.order = before.order;
+        syncPhotoOrder();
+        state.music.recs = null;
+        scoreCompare = true;
+        redrawAfterSwap(a, b);
+        toast('已換回來');
+      }
+    });
+  }
+  function redrawAfterSwap(a, b) {
+    drawGridPreview({ keepMusic: true });
+    refreshStrip();
+    window.Step5.flashSwap(document.getElementById('pgrid'), a, b);
+  }
+  // 上方縮圖列只換順序與編號（搬動既有節點，保留監聽與畫好的 canvas）
+  function refreshStrip() {
+    var strip = document.getElementById('strip');
+    if (!strip) return;
+    var add = document.getElementById('addMore');
+    state.photos.forEach(function (p, k) {
+      var b = strip.querySelector('.th[data-id="' + p.id + '"]');
+      if (!b) return;
+      strip.insertBefore(b, add);
+      var ord = b.querySelector('.ord'); if (ord) ord.textContent = pad2(k + 1);
+      b.setAttribute('aria-label', '編輯第 ' + (k + 1) + ' 張');
+    });
+    var cur = curPhoto();
+    var nm = document.querySelector('.ed-name');
+    if (cur && nm) nm.textContent = pad2(state.photos.indexOf(cur) + 1) + ' · ' + cur.name;
+  }
+
+  // ===== 第 5 步：九宮格互動綁定（鍵盤、拖曳、短按 onTap；拖曳本體在 js/step5-drag.js） =====
+  // 點一下選取、再點另一格互換（主要，手機也穩）；滑鼠按住就拖；觸控長按約 0.35 秒可在同一排內拖。
+  // 鍵盤：Enter／Space 走同一套選取互換，Esc 取消選取，← → 仍可移動一格。
+  // 編輯中的照片只由上方 .strip 切換，點格子不會切換；「拿掉」只有角落的小按鈕。
   function bindGridDrag(g) {
     qsa('.pc:not(.none)', g).forEach(function (cell) {
       cell.addEventListener('keydown', function (e) {
+        if (e.target !== cell) return;   // 格子裡的按鈕自己處理 Enter／Space
         var i = Number(cell.getAttribute('data-i'));
         if (e.key === 'Enter' || e.key === ' ') {
-          var id = cell.getAttribute('data-id');
-          if (!id) return;
-          e.preventDefault(); state.cur = id; drawPhotos();
+          e.preventDefault();
+          var r = tapCell(i);
+          if (r === 'swap') { var again = qs('#pgrid .pc[data-i="' + i + '"]'); if (again) again.focus(); }
         }
+        if (e.key === 'Escape' && state.swapSel != null) { e.preventDefault(); state.swapSel = null; swapCtx().onClear(); }
         if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
           e.preventDefault();
           var to = i + (e.key === 'ArrowLeft' ? -1 : 1);
           if (to < 0 || to >= ensureOrder().length) return;
           commitMove(i, to);
-          var again = qs('.pc[data-i="' + to + '"]'); if (again) again.focus();
+          var moved = qs('.pc[data-i="' + to + '"]'); if (moved) moved.focus();
         }
       });
     });
     window.Step5.bindDrag(g, {
       onCommit: commitMove,
-      onTap: function (index, el) {
-        var id = el.getAttribute('data-id');
-        if (!id) return;
-        state.cur = id;
-        drawPhotos();
-      }
+      onTap: function (index) { tapCell(index); }
     });
   }
 
+  // ===== 第 5 步：配樂區（#musicBox） =====
   /* ---------- 第 5 步：配這組照片的歌 ---------- */
   function currentMood() {
     return Music.moodOf(state.photos.map(function (p) { return p._thumb; }));
@@ -1596,6 +1792,7 @@
     }
     var M = state.music;
     if (!M.recs) M.recs = Music.recommend(prefs, mood, { seed: M.seed, avoid: M.avoid, lang: lang });
+    var genreNote = Music.genreConflict(prefs, lang); // 曲風與語言衝突提示（js/music-filter.js）
     box.innerHTML =
       '<div class="mb-hero">' +
         '<span class="section-label">配樂</span>' +
@@ -1603,6 +1800,7 @@
         '<p class="lead">依這組照片的氛圍挑 3 首。試聽是 Apple 的 30 秒聲音，頁面裡沒有影片。</p>' +
         (mood ? '<p class="mood" id="moodLine">' + moodHTML(mood) + '</p>' : '') +
         langSeg +
+        (genreNote ? '<p class="mf-hint" id="genreNote" role="note">' + esc(genreNote) + '</p>' : '') +
       '</div>' +
       '<ol class="songs">' + M.recs.map(function (r, k) {
         var liked = prefs.likes.indexOf(r.id) >= 0;
@@ -1610,7 +1808,8 @@
           '<span class="song-no">' + pad2(k + 1) + '</span>' +
           '<div class="song-body">' +
             '<div class="song-top"><div><p class="song-t">' + esc(r.title) + '</p>' +
-            '<p class="song-a">' + esc(r.artist) + ' · ' + r.genre + '</p></div></div>' +
+            '<p class="song-a">' + esc(r.artist) + ' · <span class="song-g" data-genre="' + esc(r.genre) + '">' + esc(r.genre) + '</span>' +
+              (r.near ? ' <span class="song-near">相近推薦</span>' : '') + '</p></div></div>' +
             '<div class="pv' + (k === 0 ? ' pv-lg' : '') + '" data-play="' + esc(r.id) + '"></div>' +
             '<p class="song-part"><span class="part">從' + r.part + '開始</span>' + r.partWhy + '</p>' +
             '<p class="song-why">' + r.why + '</p>' +

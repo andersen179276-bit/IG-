@@ -52,7 +52,8 @@ js/mock-data.js         6 種類型的規則、示範分析、拍攝卡
 js/music-library.js     內建歌單（曲風、語言、氛圍、youtubeId、itunesPreview；youtubeId 只用於外部連結）
 js/artist-aliases.js    歌單歌手的英文名與暱稱
 js/fuzzy.js             歌手／歌名模糊比對（子字串、繁簡、錯字、別名）
-js/step5.js             第五步排序與拖曳
+js/step5.js             第五步排序核心（順序同步、待辦）
+js/step5-drag.js        第五步九宮格拖曳
 js/music.js             配樂偏好（localStorage）、照片氛圍計算、推薦計分
 js/preview.js           試聽：只播 Apple 30 秒試聽（<audio>）；沒有就給 YouTube 外部連結，不嵌入影片
 js/ai.js                AI 接口（目前回傳示範結果）← 之後在這裡接 AI
